@@ -51,27 +51,12 @@ class Aggregator:
         """Get list of sources in priority order."""
         return self._sources
     
-    async def fetch_and_sync(
-        self, 
-        cpe_name: str,
-        db: Session,
-        stop_on_confirmed: bool = True
-    ) -> Tuple[bool, int]:
-        """
-        Fetch vulnerabilities for a CPE from all sources and sync to database.
-        
-        Args:
-            cpe_name: CPE 2.3 string
-            db: Database session
-            stop_on_confirmed: If True, stop at first source with confirmed vulnerabilities
-        
-        Returns:
-            Tuple of (found_vulnerable_data, count_of_cves_added)
-        """
+    async def fetch_and_sync(self, cpe_name: str, db: Session, stop_on_confirmed: bool = True) -> Tuple[bool, int]:
         confirmed = False
         total_cves_added = 0
 
         for source in self._sources:
+            logger.info(f"[Aggregator] Trying source: {source.name}")
             try:
                 logger.debug(f"Querying {source.name} for {cpe_name}")
                 results = await source.query(cpe_name)
@@ -89,17 +74,15 @@ class Aggregator:
                 logger.debug(f"{source.name}: No results for {cpe_name}")
                 continue
 
-            # Check if any result actually affects this version
             vulnerable_results = [r for r in results if r.get("affects_version")]
 
             if not vulnerable_results:
-                # Source has data for this product but version not affected
-                logger.info(f"{source.name}: Product known, version not affected for {cpe_name}")
-                if stop_on_confirmed:
-                    break  # Definitive answer — don't try other sources
+                logger.info(
+                    f"{source.name}: Product known, version not affected for {cpe_name}"
+                )
+                # Do NOT break here — other sources may have CVE data for this version
                 continue
 
-            # Write vulnerable results to database
             for result in vulnerable_results:
                 try:
                     added = self._write_normalized(result, db, original_cpe=cpe_name)
@@ -110,12 +93,11 @@ class Aggregator:
                     db.rollback()
                     continue
 
-            # Commit after each source
             try:
                 db.commit()
                 logger.info(
                     f"✓ {source.name} VULNERABLE: {cpe_name} → "
-                    f"{total_cves_added} CVEs added (score info available)"
+                    f"{total_cves_added} CVEs added"
                 )
             except Exception as e:
                 db.rollback()
@@ -123,34 +105,36 @@ class Aggregator:
                 return False, 0
 
             if stop_on_confirmed:
-                break  # Found results from this source — stop
+                break  # Only break once we've actually confirmed vulnerability
 
-        # If nothing found, try AI assessment as fallback
-        if not confirmed and settings.ai.enabled:
+        # AI fallback: runs when no source confirmed a vulnerability
+        if not confirmed:
+            logger.info(f"[AI Fallback] Assessing {cpe_name}...")
             try:
-                logger.info(f"[AI Fallback] Assessing {cpe_name}...")
                 ai_results = await self._ai_assess_vulnerability(cpe_name)
-                if ai_results:
-                    for result in ai_results:
-                        try:
-                            added = self._write_normalized(result, db, original_cpe=cpe_name)
-                            total_cves_added += added
-                            confirmed = True
-                        except Exception as e:
-                            logger.error(f"Failed to write AI result: {e}", exc_info=True)
-                            db.rollback()
-                            continue
-                    if confirmed:
-                        try:
-                            db.commit()
-                            logger.info(f"✓ [AI] VULNERABLE: {cpe_name} → {total_cves_added} assessments added")
-                        except Exception as e:
-                            db.rollback()
-                            logger.error(f"DB commit failed for AI results: {e}")
+                for result in ai_results:
+                    try:
+                        added = self._write_normalized(result, db, original_cpe=cpe_name)
+                        total_cves_added += added
+                        confirmed = True
+                    except Exception as e:
+                        logger.error(f"Failed to write AI result: {e}", exc_info=True)
+                        db.rollback()
+                        continue
+                if confirmed:
+                    try:
+                        db.commit()
+                        logger.info(
+                            f"✓ [AI] VULNERABLE: {cpe_name} → {total_cves_added} assessments added"
+                        )
+                    except Exception as e:
+                        db.rollback()
+                        logger.error(f"DB commit failed for AI results: {e}")
             except Exception as e:
                 logger.warning(f"AI assessment failed for {cpe_name}: {e}")
+        elif not confirmed:
+            logger.debug(f"[AI Fallback] Skipped for {cpe_name} — AI disabled in settings")
 
-        # If still nothing found, store unknown marker
         if not confirmed:
             try:
                 self._store_unknown_marker(cpe_name, db)
@@ -220,75 +204,34 @@ class Aggregator:
     
     async def _ai_assess_vulnerability(self, cpe_name: str) -> List[NormalizedVulnerabilityDict]:
         """
-        Use AI (Ollama) to assess if a package is likely vulnerable.
+        Use local DistilBERT model to predict CVSS score for a package.
         Returns synthesized vulnerability assessment if positive.
         """
         try:
-            from langchain_community.llms import Ollama
-            import httpx
-        except ImportError:
-            logger.warning("[AI] LangChain or httpx not installed, skipping AI assessment")
-            return []
-        
-        # Check if Ollama is reachable
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(f"{settings.ai.ollama_url}/api/tags", timeout=5.0)
-                if resp.status_code != 200:
-                    logger.debug(f"[AI] Ollama not healthy (status {resp.status_code})")
-                    return []
-        except Exception as e:
-            logger.debug(f"[AI] Ollama unreachable: {e}")
+            from cvss_prediction.cvss_prediction import predict_cvss
+        except ImportError as e:
+            logger.warning(f"[AI] Local model not installed or error loading it: {e}")
             return []
         
         try:
-            llm = Ollama(
-                model=settings.ai.model, 
-                base_url=settings.ai.ollama_url,
-                temperature=0.3,
-                num_predict=150
-            )
+            # We don't have a full description anymore since Ollama is gone, 
+            # so we provide a generic description based on the CPE name for the model.
+            generic_description = f"Security vulnerability in {cpe_name}."
             
-            prompt = f"""Analyze this software package for potential security vulnerabilities:
-
-Package CPE: {cpe_name}
-
-Based on your knowledge, is this package version likely to have known security vulnerabilities? 
-If yes, provide:
-1. A brief reason why
-2. Estimated severity (CRITICAL, HIGH, MEDIUM, LOW)
-3. Example CVE type if known
-
-If no known vulnerabilities, respond with: "No known vulnerabilities"
-
-Keep response under 200 words."""
-
-            logger.debug(f"[AI] Querying Ollama for {cpe_name}...")
-            response = await asyncio.to_thread(llm.invoke, prompt)
+            logger.debug(f"[AI] Predicting CVSS for {cpe_name} using local model...")
             
-            if "no known vulnerabilities" in response.lower():
-                logger.info(f"[AI] {cpe_name}: No vulnerabilities detected")
-                return []
-            
-            logger.info(f"[AI] {cpe_name}: Potential vulnerability detected")
-            logger.debug(f"[AI] Assessment: {response}")
-            
-            # Extract severity from response
-            severity_map = {"critical": 9.0, "high": 7.5, "medium": 5.0, "low": 3.0}
-            cvss_score = 5.0  # Default to medium
-            for level, score in severity_map.items():
-                if level in response.lower():
-                    cvss_score = score
-                    break
+            # Predict the CVSS score using our local model
+            cvss_score = float(predict_cvss(generic_description))
+            logger.info(f"[AI] {cpe_name}: Predicted CVSS Score: {cvss_score}")
             
             # Return synthesized result
             return [{
                 "cve_ids": [f"AI-{cpe_name.replace(':', '-')}"],
-                "description": f"[AI Assessment] Potential vulnerability in {cpe_name}. Analysis: {response[:200]}...",
+                "description": f"[Local AI Assessment] Potential vulnerability in {cpe_name}. Estimated severity score: {cvss_score}",
                 "affects_version": True,
                 "cvss_score": cvss_score,
                 "cvss_vector": None,
-                "source": "AI-Assessment",
+                "source": "Local-CVSS-Model",
                 "euvd_id": None,
             }]
         

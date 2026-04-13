@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from transformers import DistilBertTokenizerFast, DistilBertModel, logging
 from cvss import CVSS3
-from parse_nvd_json_to_csv import pretreat_desc
+from cvss_prediction.parse_nvd_json_to_csv import pretreat_desc
 
 logging.set_verbosity_error()
 
