@@ -40,7 +40,7 @@ class OSVSource(VulnerabilitySource, CachingSourceMixin):
             package = cpe_to_osv_package(cpe)
 
             if not package:
-                logger.debug(f"[OSV] No OSV package mapping for {cpe}")
+                logger.info(f"[OSV] No OSV package mapping for {cpe}")
                 return []
 
             async with make_client() as client:
@@ -81,5 +81,5 @@ class OSVSource(VulnerabilitySource, CachingSourceMixin):
                 return results
 
         except Exception as e:
-            logger.warning(f"[OSV] query({cpe}) failed: {e}")
+            logger.info(f"[OSV] query({cpe}) failed: {e}")
             return []

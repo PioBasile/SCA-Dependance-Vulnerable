@@ -134,7 +134,7 @@ class GitHubSource(VulnerabilitySource):
             logger.debug(f"[GitHub] No package mapping for {cpe}")
             return []
 
-        logger.info(f"[GitHub] Querying: ecosystem=Maven package={package_name}")
+        logger.info(f"[GitHub] Querying: ecosystem=maven package={package_name}")
 
         async with make_client() as client:
             try:
@@ -142,7 +142,7 @@ class GitHubSource(VulnerabilitySource):
                 resp = await client.get(
                     GITHUB_ADVISORY_REST,
                     params={
-                        "ecosystem":    "Maven",
+                        "ecosystem":    "maven",
                         "package":      package_name,
                         "per_page":     100,
                         "type":         "reviewed",  # only human-reviewed advisories

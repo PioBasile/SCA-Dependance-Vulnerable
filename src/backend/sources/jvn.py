@@ -57,20 +57,17 @@ class JVNSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin)
             logger.error(f"[JVN] query({cpe}) failed: {e}", exc_info=True)
             return []
 
-    async def _search_by_product(
-        self, vendor: str, product: str
-    ) -> List[NormalizedVulnerabilityDict]:
+    async def _search_by_product(self, vendor: str, product: str) -> List[NormalizedVulnerabilityDict]:
         """Search JVN by vendor and product using CPE filters."""
         try:
             cache_key = self._get_cache_key("search_by_product", vendor, product)
             cached = self._get_from_cache(cache_key)
             if cached is not None:
                 return cached
-            
+
             await self._apply_rate_limit()
-            
+
             async with make_client() as client:
-                # Real MyJVN API routing and CPE filtering
                 resp = await client.get(
                     JVN_API_BASE,
                     params={
@@ -78,77 +75,94 @@ class JVNSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin)
                         "feed": "hnd",
                         "cpeName": f"cpe:/:{vendor}:{product}",
                         "lang": "en",
-                        "ft": "json"  # Forces JSON response instead of XML
+                        # No ft=json — the API returns XML regardless
                     },
                     timeout=15.0
                 )
                 resp.raise_for_status()
-                data = resp.json()
-                
+
+                # Guard: empty body means no results
+                content = resp.text.strip()
+                if not content:
+                    self._set_in_cache(cache_key, [])
+                    return []
+
+                # Parse XML
+                import xml.etree.ElementTree as ET
+                try:
+                    root = ET.fromstring(content)
+                except ET.ParseError as e:
+                    logger.warning(f"[JVN] XML parse error for {vendor}/{product}: {e}")
+                    return []
+
+                # MyJVN uses these namespaces in the HND feed
+                ns = {
+                    "rdf":  "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+                    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+                    "dc":   "http://purl.org/dc/elements/1.1/",
+                    "dcterms": "http://purl.org/dc/terms/",
+                    "sec":  "http://jvn.jp/rss/mod_sec/3.0/",
+                    "marking": "http://data-marking.mitre.org/Marking-1.0",
+                    "tlpMarking": "http://www.us-cert.gov/tlp/",
+                }
+
                 results: List[NormalizedVulnerabilityDict] = []
-                
-                # MyJVN's ft=json translates XML directly to JSON. 
-                # Items are usually found at the root level or nested under rdf:RDF.
-                items = data.get("item", [])
-                if not items and isinstance(data.get("rdf:RDF"), dict):
-                    items = data["rdf:RDF"].get("item", [])
-                
-                # If only one result is returned, it might be a dict instead of a list.
-                if isinstance(items, dict):
-                    items = [items]
-                
-                for item in items:
-                    # Extract CVE IDs. MyJVN usually places these in sec:identifier
+
+                for item in root.findall("item", ns):
+                    # CVE IDs from dc:identifier or sec:identifier
                     cve_ids = []
-                    identifiers = item.get("sec:identifier", [])
-                    if isinstance(identifiers, str):
-                        identifiers = [identifiers]
-                        
-                    for ident in identifiers:
-                        if "CVE" in ident:
+                    for ident_el in item.findall("sec:identifier", ns):
+                        ident = (ident_el.text or "").strip()
+                        if ident.startswith("CVE-"):
                             cve_ids.append(ident)
-                    
-                    # Extract CVSS Data
+
+                    # CVSS
                     cvss_score = None
                     cvss_vector = None
-                    cvss_data = item.get("sec:cvss", {})
-                    
-                    if isinstance(cvss_data, list) and len(cvss_data) > 0:
-                        cvss_data = cvss_data[0]
-                        
-                    if isinstance(cvss_data, dict):
-                        # Depending on the specific feed schema, keys might have '@' prefixes
-                        raw_score = cvss_data.get("@score") or cvss_data.get("score")
-                        cvss_vector = cvss_data.get("@vector") or cvss_data.get("vector")
-                        
+                    cvss_el = item.find("sec:cvss", ns)
+                    if cvss_el is not None:
+                        raw_score = cvss_el.get("score")
+                        cvss_vector = cvss_el.get("vector")
                         if raw_score:
                             try:
                                 cvss_score = float(raw_score)
                             except ValueError:
                                 pass
-                    
-                    # Construct description and reference link
-                    description = item.get("description", "")
-                    if not description:
-                        description = item.get("title", "")
-                        
-                    link = item.get("link", "")
-                    
+
+                    # Description / title / link
+                    desc_el = item.find("dc:description", ns)
+                    title_el = item.find("dc:title", ns)  # fallback
+                    link_el = item.find("link", ns)
+
+                    description = ""
+                    if desc_el is not None and desc_el.text:
+                        description = desc_el.text.strip()
+                    elif title_el is not None and title_el.text:
+                        description = title_el.text.strip()
+
+                    link = ""
+                    if link_el is not None and link_el.text:
+                        link = link_el.text.strip()
+
                     results.append({
                         "cve_ids": cve_ids,
                         "euvd_id": None,
                         "source": self.name,
                         "base_score": cvss_score,
                         "base_vector": cvss_vector,
-                        "base_version": "3.1", # Assuming v3.1 fallback
+                        "base_version": "3.1",
                         "description": description,
                         "references": [link] if link else [],
-                        "affects_version": True, 
-                        "raw": item,
+                        "affects_version": True,
+                        "raw": item,  # ET.Element — serialise if you need JSON-safe raw
                     })
-                
+
                 self._set_in_cache(cache_key, results)
                 return results
+
         except Exception as e:
-            logger.error(f"[JVN] _search_by_product({vendor}/{product}) failed: {e}", exc_info=True)
+            logger.error(
+                f"[JVN] _search_by_product({vendor}/{product}) failed: {e}",
+                exc_info=True,
+            )
             return []
