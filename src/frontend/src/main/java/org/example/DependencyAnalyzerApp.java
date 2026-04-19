@@ -30,6 +30,7 @@ import org.graphstream.ui.swing_viewer.SwingViewer;
 import org.graphstream.ui.swing_viewer.ViewPanel;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
+import io.github.cdimascio.dotenv.Dotenv;
 import java.io.File;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -41,6 +42,7 @@ import java.util.List;
 public class DependencyAnalyzerApp extends Application {
 
     private Graph graph;
+    private static final Dotenv dotenv = Dotenv.load();
 
     @Override
     public void start(Stage primaryStage) {
@@ -149,7 +151,8 @@ public class DependencyAnalyzerApp extends Application {
                         try {
                             System.out.println("Calling Backend for CPE: " + cpe);
                             String encodedCpe = URLEncoder.encode(cpe, StandardCharsets.UTF_8.toString());
-                            String url = "http://127.0.0.1:8000/config_nodes_cpe_match/?cpe_criteria=" + encodedCpe;
+                            String backendUrl = dotenv.get("BACKEND_URL", "http://127.0.0.1:8000");
+                            String url = backendUrl + "/config_nodes_cpe_match/?cpe_criteria=" + encodedCpe;
                             String result = CveService.fetchDataFromApi(url);
                             System.out.println("Backend result: " + result);
 

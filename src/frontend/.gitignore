@@ -37,3 +37,4 @@ build/
 
 syft
 *.json
+.env

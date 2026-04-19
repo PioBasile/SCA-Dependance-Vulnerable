@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+confirm.html
+cookies.txt
