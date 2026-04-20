@@ -1,3 +1,9 @@
+import httpx
+from functools import lru_cache
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
 MAVEN_TO_EUVD: dict[tuple, tuple] = {
     ("apache", "log4j-core"):              ("apache", "log4j2"),
     ("apache", "log4j-api"):               ("apache", "log4j2"),
@@ -44,45 +50,6 @@ MAVEN_TO_EUVD: dict[tuple, tuple] = {
     ("com.fasterxml.woodstox", "woodstox-core"): ("fasterxml", "woodstox"),
 }
 
-OSV_PACKAGE_MAP: dict[tuple, str] = {
-    ("commons-collections", "commons-collections"): "commons-collections:commons-collections",
-    ("apache", "commons-collections4"):             "org.apache.commons:commons-collections4",
-    ("apache", "commons-text"):                     "org.apache.commons:commons-text",
-    ("apache", "commons-lang3"):                    "org.apache.commons:commons-lang3",
-    ("commons-io", "commons-io"):                   "commons-io:commons-io",
-    ("snakeyaml",  "snakeyaml"):                    "org.yaml:snakeyaml",
-    ("org.yaml",   "snakeyaml"):                    "org.yaml:snakeyaml",
-    ("com.h2database", "h2"):                       "com.h2database:h2",
-    ("hibernate-core",  "hibernate-core"):          "org.hibernate:hibernate-core",
-    ("org.hibernate",   "hibernate-core"):          "org.hibernate:hibernate-core",
-    ("com.fasterxml.jackson.core", "jackson-databind"):  "com.fasterxml.jackson.core:jackson-databind",
-    ("com.fasterxml.jackson.core", "jackson-annotations"): "com.fasterxml.jackson.core:jackson-annotations",
-    ("com.thoughtworks.xstream", "xstream"):        "com.thoughtworks.xstream:xstream",
-    ("com.alibaba", "fastjson"):                    "com.alibaba:fastjson",
-    ("org.springframework", "spring-webmvc"):       "org.springframework:spring-webmvc",
-    ("org.springframework", "spring-core"):         "org.springframework:spring-core",
-    ("spring-cloud-function-context", "spring-cloud-function-context"): "org.springframework.cloud:spring-cloud-function-context",
-    ("spring-cloud-gateway-server", "spring-cloud-gateway-server"):     "org.springframework.cloud:spring-cloud-gateway-server",
-    ("apache", "struts2-core"):                     "org.apache.struts:struts2-core",
-    ("org.apache.struts", "struts2-core"):          "org.apache.struts:struts2-core",
-    ("netty-all",    "netty-all"):                  "io.netty:netty-all",
-    ("netty-buffer", "netty-buffer"):               "io.netty:netty-buffer",
-    ("io.netty",     "netty-all"):                  "io.netty:netty-all",
-    ("io.netty",     "netty-buffer"):               "io.netty:netty-buffer",
-    ("org.bouncycastle", "bcprov-jdk15on"):         "org.bouncycastle:bcprov-jdk15on",
-    ("org.bouncycastle", "bcprov-jdk18on"):         "org.bouncycastle:bcprov-jdk18on",
-    ("com.google.guava", "guava"):                  "com.google.guava:guava",
-    ("org.eclipse.jetty", "jetty-server"):          "org.eclipse.jetty:jetty-server",
-    ("apache", "tomcat-embed-core"):                "org.apache.tomcat.embed:tomcat-embed-core",
-    ("org.apache.tomcat.embed", "tomcat-embed-core"): "org.apache.tomcat.embed:tomcat-embed-core",
-    ("apache", "log4j-core"):                       "org.apache.logging.log4j:log4j-core",
-    ("apache", "log4j-api"):                        "org.apache.logging.log4j:log4j-api",
-    ("apache", "shiro-core"):                       "org.apache.shiro:shiro-core",
-    ("org.apache.shiro", "shiro-core"):             "org.apache.shiro:shiro-core",
-    ("com.google.guava", "guava"):                  "com.google.guava:guava",
-}
-
-
 def parse_cpe(cpe: str) -> dict:
     parts = cpe.split(":")
     return {
@@ -127,21 +94,36 @@ def resolve_euvd_names(cpe: str) -> list[tuple[str, str]]:
     return result
 
 
+@lru_cache(maxsize=1024)
+def resolve_maven_group_id(artifact_id: str) -> str | None:
+    url = f"https://search.maven.org/solrsearch/select?q=a:{artifact_id}&rows=1&wt=json"
+    
+    try:
+        with httpx.Client() as client:
+            response = client.get(url, timeout=5.0)
+            response.raise_for_status()
+            data = response.json()
+            docs = data.get("response", {}).get("docs", [])
+            
+            if docs:
+                found_group_id = docs[0].get("g")
+                logger.debug(f"[CPE Mapper] Resolved {artifact_id} -> {found_group_id}")
+                return found_group_id
+    except Exception as e:
+        logger.warning(f"[CPE Mapper] Failed to resolve Maven Group ID for {artifact_id}: {e}")
+        
+    return None
+
 def cpe_to_osv_package(cpe: str) -> dict | None:
     parsed  = parse_cpe(cpe)
     vendor  = parsed["vendor"]
     product = parsed["product"]
 
-    key = (vendor, product)
-    if key in OSV_PACKAGE_MAP:
-        return {"name": OSV_PACKAGE_MAP[key], "ecosystem": "Maven"}
-
-    short_vendor = vendor.split(".")[-1] if "." in vendor else vendor
-    short_key    = (short_vendor, product)
-    if short_key in OSV_PACKAGE_MAP:
-        return {"name": OSV_PACKAGE_MAP[short_key], "ecosystem": "Maven"}
-
     if "." in vendor:
         return {"name": f"{vendor}:{product}", "ecosystem": "Maven"}
+
+    dynamic_group_id = resolve_maven_group_id(product)
+    if dynamic_group_id:
+        return {"name": f"{dynamic_group_id}:{product}", "ecosystem": "Maven"}
 
     return None

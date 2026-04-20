@@ -10,45 +10,6 @@ logger = logging.getLogger(__name__)
 # REST endpoint 
 GITHUB_ADVISORY_REST = "https://api.github.com/advisories"
 
-# Maven groupId:artifactId -> GitHub ecosystem package name
-GITHUB_PACKAGE_MAP: dict[tuple, str] = {
-    ("apache", "log4j-core"):               "org.apache.logging.log4j:log4j-core",
-    ("apache", "log4j-api"):                "org.apache.logging.log4j:log4j-api",
-    ("apache", "struts2-core"):             "org.apache.struts:struts2-core",
-    ("org.apache.struts", "struts2-core"):  "org.apache.struts:struts2-core",
-    ("commons-collections", "commons-collections"): "commons-collections:commons-collections",
-    ("apache", "commons-collections4"):     "org.apache.commons:commons-collections4",
-    ("apache", "commons-text"):             "org.apache.commons:commons-text",
-    ("apache", "commons-lang3"):            "org.apache.commons:commons-lang3",
-    ("commons-io", "commons-io"):           "commons-io:commons-io",
-    ("snakeyaml",  "snakeyaml"):            "org.yaml:snakeyaml",
-    ("org.yaml",   "snakeyaml"):            "org.yaml:snakeyaml",
-    ("com.h2database", "h2"):               "com.h2database:h2",
-    ("hibernate-core",  "hibernate-core"):  "org.hibernate:hibernate-core",
-    ("org.hibernate",   "hibernate-core"):  "org.hibernate:hibernate-core",
-    ("com.fasterxml.jackson.core", "jackson-databind"):  "com.fasterxml.jackson.core:jackson-databind",
-    ("com.fasterxml.jackson.core", "jackson-annotations"): "com.fasterxml.jackson.core:jackson-annotations",
-    ("com.thoughtworks.xstream", "xstream"): "com.thoughtworks.xstream:xstream",
-    ("com.alibaba", "fastjson"):            "com.alibaba:fastjson",
-    ("org.springframework", "spring-webmvc"): "org.springframework:spring-webmvc",
-    ("org.springframework", "spring-core"):   "org.springframework:spring-core",
-    ("spring-cloud-function-context", "spring-cloud-function-context"): "org.springframework.cloud:spring-cloud-function-context",
-    ("spring-cloud-gateway-server",   "spring-cloud-gateway-server"):   "org.springframework.cloud:spring-cloud-gateway-server",
-    ("netty-all",    "netty-all"):          "io.netty:netty-all",
-    ("netty-buffer", "netty-buffer"):       "io.netty:netty-buffer",
-    ("io.netty",     "netty-all"):          "io.netty:netty-all",
-    ("io.netty",     "netty-buffer"):       "io.netty:netty-buffer",
-    ("org.bouncycastle", "bcprov-jdk15on"): "org.bouncycastle:bcprov-jdk15on",
-    ("org.bouncycastle", "bcprov-jdk18on"): "org.bouncycastle:bcprov-jdk18on",
-    ("com.google.guava", "guava"):          "com.google.guava:guava",
-    ("org.eclipse.jetty", "jetty-server"):  "org.eclipse.jetty:jetty-server",
-    ("apache",                  "tomcat-embed-core"): "org.apache.tomcat.embed:tomcat-embed-core",
-    ("org.apache.tomcat.embed", "tomcat-embed-core"): "org.apache.tomcat.embed:tomcat-embed-core",
-    ("apache",           "shiro-core"):     "org.apache.shiro:shiro-core",
-    ("org.apache.shiro", "shiro-core"):     "org.apache.shiro:shiro-core",
-}
-
-
 class GitHubSource(VulnerabilitySource):
 
     @property
@@ -78,25 +39,7 @@ class GitHubSource(VulnerabilitySource):
                 return False
 
     def _resolve_package(self, cpe: str) -> str | None:
-        """Maps CPE to GitHub Maven package name (groupId:artifactId)."""
-        parsed  = parse_cpe(cpe)
-        vendor  = parsed["vendor"]
-        product = parsed["product"]
-
-        key = (vendor, product)
-        if key in GITHUB_PACKAGE_MAP:
-            return GITHUB_PACKAGE_MAP[key]
-
-        short_vendor = vendor.split(".")[-1] if "." in vendor else vendor
-        short_key    = (short_vendor, product)
-        if short_key in GITHUB_PACKAGE_MAP:
-            return GITHUB_PACKAGE_MAP[short_key]
-
-        # Generic fallback for dotted groupIds
-        if "." in vendor:
-            return f"{vendor}:{product}"
-
-        return None
+        return cpe_to_osv_package(cpe)
 
     def _check_version_affected(self, advisory: dict, target_version: str) -> bool:
         """
@@ -214,5 +157,5 @@ class GitHubSource(VulnerabilitySource):
                 return results
 
             except Exception as e:
-                logger.error(f"[GitHub] query({cpe}) failed: {e}", exc_info=True)
+                logger.info(f"[GitHub] query({cpe}) failed: {e}", exc_info=True)
                 return []
