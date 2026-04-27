@@ -150,9 +150,14 @@ async def search_cves(
 
 @app.get("/config_nodes_cpe_match/", tags=["Compatibility"])
 async def get_cpe_match(cpe_criteria: str = Query(...), db: Session = Depends(get_db)):
+    ai_prediction = None
+    
     cves = VulnerabilityService.search_by_cpe(cpe_criteria, db)
+
     if not cves:
-        found, _ = await aggregator.fetch_and_sync(cpe_criteria, db)
+        result = await aggregator.fetch_and_sync(cpe_criteria, db)
+        found = result[0]
+
         cves = VulnerabilityService.search_by_cpe(cpe_criteria, db) if found else []
 
     nodes_data = []
