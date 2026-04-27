@@ -106,9 +106,7 @@ class CachingSourceMixin:
     
     def _get_from_cache(self, key: str) -> Optional[Any]:
         """Get value from cache."""
-        # >>> CACHE BYPASS — in-memory per-source cache disabled for testing.
-        return None
-        # <<< CACHE BYPASS
+
         if key in self._cache:
             value, timestamp = self._cache[key]
             import time

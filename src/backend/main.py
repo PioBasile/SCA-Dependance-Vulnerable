@@ -80,17 +80,14 @@ async def sync_status(db: Session = Depends(get_db)):
 
 @app.post("/query", response_model=CveQueryResponse, tags=["Query"])
 async def query_cpe(request: CPEQueryRequest, db: Session = Depends(get_db)):
-    # >>> CACHE BYPASS — DB lookup short-circuit disabled for testing.
-    # cves = VulnerabilityService.search_by_cpe(request.cpe, db)
-    # if not cves:
-    #     logger.info("CPE %s not in cache, querying sources", request.cpe)
-    #     found, _ = await aggregator.fetch_and_sync(request.cpe, db)
-    #     cves = VulnerabilityService.search_by_cpe(request.cpe, db) if found else []
-    logger.info("CPE %s — cache bypass, querying sources", request.cpe)
-    found, _, ai_prediction = await aggregator.fetch_and_sync(request.cpe, db)
-    cves = VulnerabilityService.search_by_cpe(request.cpe, db) if found else []
-    # <<< CACHE BYPASS
 
+    cves = VulnerabilityService.search_by_cpe(request.cpe, db)
+    if not cves:
+        logger.info("CPE %s not in cache, querying sources", request.cpe)
+        found, _ = await aggregator.fetch_and_sync(request.cpe, db)
+        cves = VulnerabilityService.search_by_cpe(request.cpe, db) if found else []
+
+    
     vulnerabilities = [
         {
             "cve_id": cve.cve_id,
@@ -153,14 +150,10 @@ async def search_cves(
 
 @app.get("/config_nodes_cpe_match/", tags=["Compatibility"])
 async def get_cpe_match(cpe_criteria: str = Query(...), db: Session = Depends(get_db)):
-    # >>> CACHE BYPASS — DB lookup short-circuit disabled for testing.
-    # cves = VulnerabilityService.search_by_cpe(cpe_criteria, db)
-    # if not cves:
-    #     found, _ = await aggregator.fetch_and_sync(cpe_criteria, db)
-    #     cves = VulnerabilityService.search_by_cpe(cpe_criteria, db) if found else []
-    found, _, ai_prediction = await aggregator.fetch_and_sync(cpe_criteria, db)
-    cves = VulnerabilityService.search_by_cpe(cpe_criteria, db) if found else []
-    # <<< CACHE BYPASS
+    cves = VulnerabilityService.search_by_cpe(cpe_criteria, db)
+    if not cves:
+        found, _ = await aggregator.fetch_and_sync(cpe_criteria, db)
+        cves = VulnerabilityService.search_by_cpe(cpe_criteria, db) if found else []
 
     nodes_data = []
     for cve in cves:
