@@ -1,13 +1,12 @@
 """GitHub Advisory Database source — uses REST API, not GraphQL."""
-import logging
-from matching.cpe import parse_cpe, cpe_to_osv_package
-from matching.version import version_is_affected
-from config import make_client, GITHUB_TOKEN
+from core.config import GITHUB_TOKEN, make_client
+from core.logger import get_logger
+from matching.cpe import cpe_to_osv_package, parse_cpe
+from matching.version import _parse_version_safe, version_is_affected
 from sources.base import VulnerabilitySource
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# REST endpoint 
 GITHUB_ADVISORY_REST = "https://api.github.com/advisories"
 
 class GitHubSource(VulnerabilitySource):
@@ -39,31 +38,54 @@ class GitHubSource(VulnerabilitySource):
                 return False
 
     def _resolve_package(self, cpe: str) -> str | None:
-        return cpe_to_osv_package(cpe)
+        """Return ``"groupId:artifactId"`` for Maven CPEs, else ``None``."""
+        pkg = cpe_to_osv_package(cpe)
+        if not pkg:
+            return None
+        if (pkg.get("ecosystem") or "").lower() != "maven":
+            return None
+        return pkg.get("name")
 
-    def _check_version_affected(self, advisory: dict, target_version: str) -> bool:
+    def _check_version_affected(
+        self, advisory: dict, target_version: str, package_name: str
+    ) -> bool:
         """
-        Check if target_version falls in any vulnerable range in the advisory.
-        GitHub REST response structure:
-          vulnerabilities[].vulnerable_version_range  e.g. ">= 2.0.0, < 2.15.0"
-          vulnerabilities[].first_patched_version     e.g. "2.15.0"
+        Return True only if some advisory entry confirms ``target_version``
+        is in scope for ``package_name``.
+
+        GitHub REST response structure (per advisory):
+            vulnerabilities[].package = {"ecosystem": "maven", "name": "..."}
+            vulnerabilities[].vulnerable_version_range  e.g. ">= 2.0.0, < 2.15.0"
+            vulnerabilities[].first_patched_version     e.g. "2.15.0"
+
+        We require:
+          1. the entry's package matches our queried Maven artifact;
+          2. ``first_patched_version`` (when present) is *strictly greater* than
+             ``target_version`` — otherwise the lib is already patched;
+          3. every comma-separated clause in ``vulnerable_version_range`` holds.
+        Empty ranges no longer auto-match — without a range we can't claim a
+        specific version is affected.
         """
+        target = _parse_version_safe(target_version)
+        wanted = (package_name or "").lower()
+
         for vuln in advisory.get("vulnerabilities", []):
-            vvr = vuln.get("vulnerable_version_range", "")
+            pkg = vuln.get("package") or {}
+            if (pkg.get("ecosystem") or "").lower() != "maven":
+                continue
+            if wanted and (pkg.get("name") or "").lower() != wanted:
+                continue
+
+            patched = _parse_version_safe(vuln.get("first_patched_version") or "")
+            if patched and target and target >= patched:
+                continue  # already on or past the fix
+
+            vvr = (vuln.get("vulnerable_version_range") or "").strip()
             if not vvr:
-                return True  # no range info → assume affected
+                continue
 
-            # GitHub uses comma-separated constraints like ">= 2.0.0, < 2.15.0"
-            # We need to check all constraints are satisfied
-            constraints = [c.strip() for c in vvr.split(",")]
-            all_match   = True
-
-            for constraint in constraints:
-                if not version_is_affected(constraint, target_version):
-                    all_match = False
-                    break
-
-            if all_match:
+            clauses = [c.strip() for c in vvr.split(",") if c.strip()]
+            if clauses and all(version_is_affected(c, target_version) for c in clauses):
                 return True
 
         return False
@@ -85,10 +107,12 @@ class GitHubSource(VulnerabilitySource):
                 resp = await client.get(
                     GITHUB_ADVISORY_REST,
                     params={
-                        "ecosystem":    "maven",
-                        "package":      package_name,
-                        "per_page":     100,
-                        "type":         "reviewed",  # only human-reviewed advisories
+                        "ecosystem": "maven",
+                        # ``affects`` is the actual filter — ``package`` is a
+                        # documented field but the REST API silently ignores it.
+                        "affects": package_name,
+                        "per_page": 100,
+                        "type": "reviewed",  # only human-reviewed advisories
                     },
                     headers=self._get_headers(),
                     timeout=15.0,
@@ -111,7 +135,9 @@ class GitHubSource(VulnerabilitySource):
 
                 results = []
                 for advisory in advisories:
-                    affected = self._check_version_affected(advisory, target_version)
+                    affected = self._check_version_affected(
+                        advisory, target_version, package_name
+                    )
 
                     # Extract CVE IDs from identifiers list
                     cve_ids = [

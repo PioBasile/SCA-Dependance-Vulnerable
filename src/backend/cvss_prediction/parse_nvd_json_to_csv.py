@@ -1,9 +1,8 @@
-import json
 import csv
-from pathlib import Path
-import pandas as pd
 import html
+import json
 import re
+from pathlib import Path
 
 LABEL_MAPS = {
     "attackVector":          {"N": 0, "A": 1, "L": 2, "P": 3},
@@ -80,6 +79,8 @@ def pretreat_desc(text: str) -> str:
     return text
 
 def process_and_append(file_path, output_csv):
+    import pandas as pd  # offline-only dependency
+
     data_to_write = []
 
     with open(file_path, 'r', encoding='utf-8') as f:

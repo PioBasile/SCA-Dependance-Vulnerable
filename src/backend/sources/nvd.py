@@ -48,6 +48,11 @@ class NVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin)
     then enrich them via EUVD.
     """
 
+    # NVD allows 50 req / 30 s with an API key (≈600 ms each) and only
+    # 5 req / 30 s without. Spacing requests prevents the 403 → 5 s sleep
+    # spiral that wrecked benchmark tail latencies.
+    REQUEST_DELAY = 0.6
+
     @property
     def name(self) -> str:
         return "NVD"

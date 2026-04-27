@@ -55,10 +55,10 @@ public class DependencyAnalyzerApp extends Application {
         titleLabel.setPadding(new Insets(10, 0, 0, 10));
 
         Text descriptionText = new Text(
-                "Each security vulnerability is represented as a node in the graph. The bigger nodes are the Dependency nodes. Edges connect security vulnerability nodes that affect Dependency."
-                        + " Vulnerability nodes are colored by YELLOW! if they have a \"Low\" severity score of 0.0-3.9."
-                        + " Vulnerability nodes are colored by ORANGE! if they have a \"Medium\" severity score of 4.0-6.9."
-                        + " Vulnerability nodes will be colored with RED! if they have a \"High\" severity score of 7.0-10.0."
+                "Each dependency is a node in the graph. Colour reflects the verdict from the backend chain:"
+                        + "  RED — a real CVE was confirmed by EUVD / OSV / NVD / GitHub for this version."
+                        + "  YELLOW — no real CVE was found, but the local AI model produced a severity hint (the score is shown in the node label, e.g. 'AI: 8.4')."
+                        + "  GREEN — no source flagged this dependency and AI did not produce a hint."
         );
         descriptionText.setFill(Color.WHITE);
 
@@ -93,12 +93,12 @@ public class DependencyAnalyzerApp extends Application {
 
         HBox vulnSymbols = new HBox(-2);
         vulnSymbols.setAlignment(Pos.CENTER_LEFT);
-        Label yellowSymbol = new Label("●"); yellowSymbol.setStyle("-fx-font-size: 40px;"); yellowSymbol.setTextFill(Color.YELLOW);
-        Label orangeSymbol = new Label("●"); orangeSymbol.setStyle("-fx-font-size: 40px;"); orangeSymbol.setTextFill(Color.ORANGE);
+        Label greenSymbol = new Label("●"); greenSymbol.setStyle("-fx-font-size: 40px;"); greenSymbol.setTextFill(Color.GREEN);
+        Label yellowSymbol = new Label("●"); yellowSymbol.setStyle("-fx-font-size: 40px;"); yellowSymbol.setTextFill(Color.GOLD);
         Label redSymbol = new Label("●"); redSymbol.setStyle("-fx-font-size: 40px;"); redSymbol.setTextFill(Color.RED);
-        Label vulnLabel = new Label("Vulnerabilities nodes colors");
+        Label vulnLabel = new Label("Clean / AI-predicted / Confirmed CVE");
         Region spacer3 = new Region(); spacer3.setPrefWidth(5);
-        vulnSymbols.getChildren().addAll(yellowSymbol, orangeSymbol, redSymbol, spacer3, vulnLabel);
+        vulnSymbols.getChildren().addAll(greenSymbol, yellowSymbol, redSymbol, spacer3, vulnLabel);
         Region verticalSpace = new Region(); verticalSpace.setPrefHeight(40);
         symbolsBox.getChildren().addAll(apiSymbols, linkSymbol, verticalSpace, vulnSymbols);
 
@@ -135,17 +135,25 @@ public class DependencyAnalyzerApp extends Application {
             String projectPath = textInputField.getText();
             if (projectPath == null || projectPath.isEmpty()) return;
 
+            // Guard: disable the button until this run finishes so a second
+            // click doesn't spawn a parallel analysis. Re-enabled in finally.
+            analyzeButton.setDisable(true);
+            analyzeButton.setText("ANALYZING…");
+
             new Thread(() -> {
-                // Clear graph on Swing EDT
-                SwingUtilities.invokeLater(() -> {
-                    synchronized (graph) {
-                        graph.clear();
+                try {
+                    SwingUtilities.invokeLater(() -> {
+                        synchronized (graph) {
+                            graph.clear();
+                        }
+                    });
+
+                    SbomExtractor.ExtractSbom(projectPath, 2);
+                    File sbomFile = new File("sbom.cyclonedx.json");
+                    if (!sbomFile.exists()) {
+                        return;
                     }
-                });
-                
-                SbomExtractor.ExtractSbom(projectPath, 2);
-                File sbomFile = new File("sbom.cyclonedx.json");
-                if (sbomFile.exists()) {
+
                     List<String> cpes = SbomExtractor.extractCpeFromCycloneDx("sbom.cyclonedx.json");
                     for (String cpe : cpes) {
                         try {
@@ -156,7 +164,6 @@ public class DependencyAnalyzerApp extends Application {
                             String result = CveService.fetchDataFromApi(url);
                             System.out.println("Backend result: " + result);
 
-                            // Update Graph on Swing EDT (same thread as renderer)
                             SwingUtilities.invokeLater(() -> {
                                 synchronized (graph) {
                                     try {
@@ -165,28 +172,41 @@ public class DependencyAnalyzerApp extends Application {
                                             n = graph.addNode(cpe);
                                             n.setAttribute("ui.label", cpe);
                                         }
-                                        
-                                        // Parse JSON response to check if vulnerabilities were found
+
+                                        // Three tiers:
+                                        //   found == true                       → RED  (real CVE confirmed)
+                                        //   found == false + ai_prediction set  → YELLOW (AI severity hint)
+                                        //   otherwise                            → GREEN (clean)
                                         boolean isVulnerable = false;
+                                        Double aiScore = null;
                                         try {
                                             ObjectMapper mapper = new ObjectMapper();
                                             JsonNode jsonResponse = mapper.readTree(result);
-                                            
-                                            // Check the "found" field in the response
                                             if (jsonResponse.has("found") && jsonResponse.get("found").asBoolean()) {
                                                 isVulnerable = true;
                                             }
+                                            JsonNode aiNode = jsonResponse.path("ai_prediction");
+                                            if (aiNode != null && !aiNode.isMissingNode() && !aiNode.isNull()) {
+                                                JsonNode scoreNode = aiNode.path("score");
+                                                if (!scoreNode.isMissingNode() && !scoreNode.isNull()) {
+                                                    aiScore = scoreNode.asDouble();
+                                                }
+                                            }
                                         } catch (Exception e) {
-                                            // In case of parsing error, treat as safe
                                             isVulnerable = false;
                                         }
-                                        
+
                                         if (isVulnerable) {
-                                            // Vulnérable : Rouge
                                             n.setAttribute("ui.style", "fill-color: red; size: 25px; text-size: 15px;");
                                             System.out.println("VULNERABILITY DETECTED for " + cpe);
+                                        } else if (aiScore != null) {
+                                            // AI predicted severity but no real CVE was confirmed.
+                                            // Surface the score directly in the node label so the
+                                            // user can tell at a glance how confident the model is.
+                                            n.setAttribute("ui.style", "fill-color: gold; size: 22px; text-size: 13px;");
+                                            n.setAttribute("ui.label", String.format("%s  (AI: %.1f)", cpe, aiScore));
+                                            System.out.printf("AI HINT for %s: predicted CVSS %.1f (no real CVE)%n", cpe, aiScore);
                                         } else {
-                                            // Sain : Vert
                                             n.setAttribute("ui.style", "fill-color: green; size: 20px; text-size: 12px;");
                                         }
                                     } catch (ConcurrentModificationException cme) {
@@ -194,13 +214,17 @@ public class DependencyAnalyzerApp extends Application {
                                     }
                                 }
                             });
-                            
-                            // Delay to prevent rapid Swing EDT queue overload
+
                             Thread.sleep(200);
                         } catch (Exception e) {
                             e.printStackTrace();
                         }
                     }
+                } finally {
+                    Platform.runLater(() -> {
+                        analyzeButton.setDisable(false);
+                        analyzeButton.setText("ANALYZE");
+                    });
                 }
             }).start();
         });

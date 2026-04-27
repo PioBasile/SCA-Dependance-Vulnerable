@@ -1,59 +1,77 @@
 """Core aggregator service that orchestrates multiple vulnerability sources."""
 import asyncio
-import logging
-from typing import List, Dict, Optional, Tuple
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
 from sqlalchemy.orm import Session
 
+from core.config import settings
+from core.exceptions import SourceError
 from core.logger import get_logger
 from core.types import NormalizedVulnerabilityDict
-from core.exceptions import SourceError
-from core.config import settings
-from models import CveItem, Description, Reference, CvssMetric, Node, CpeMatch
+from models import CpeMatch, CveItem, CvssMetric, Description, Node, Reference
+from sources.ai import LocalAISource
 from sources.base import VulnerabilitySource
 from sources.euvd import EUVDSource
-from sources.osv import OSVSource
-from sources.nvd import NVDSource
 from sources.github import GitHubSource
-from sources.jvn import JVNSource
+from sources.nvd import NVDSource
+from sources.osv import OSVSource
 
 logger = get_logger(__name__)
 
 
 class Aggregator:
-    """
-    Orchestrates querying multiple vulnerability sources in priority order.
-    
+    """Orchestrates querying multiple vulnerability sources in priority order.
+
     Sources are tried in sequence:
-    1. EUVD (European, primary enrichment)
-    2. OSV (Open source fallback)
-    3. NVD (Historical index, ID-only)
-    4. GitHub (GitHub Security Advisories, if token configured)
-    5. JVN (Japan Vulnerability Notes, additional data)
-    
-    Sources stop at first successful match with confirmed vulnerability for the version.
+      1. EUVD    — European database, primary enrichment
+      2. OSV     — Open Source Vulnerabilities
+      3. NVD     — National Vulnerability Database (CPE→CVE index)
+      4. GitHub  — GitHub Security Advisories
+      5. AI      — local CVSS-prediction model (last-resort, only when
+                   ``settings.ai.enabled`` is true)
+
+    Iteration stops at the first source that confirms a vulnerability for the
+    queried version. EUVD is then re-queried by CVE-ID to back-fill its
+    metadata onto records that were created by another source.
     """
-    
+
     def __init__(self):
-        """Initialize aggregator with vulnerability sources."""
+        self._euvd = EUVDSource()
         self._sources: List[VulnerabilitySource] = [
-            EUVDSource(),
+            self._euvd,
             OSVSource(),
             NVDSource(),
             GitHubSource(),
-            JVNSource(),
+            LocalAISource(),
         ]
-        logger.info(f"Aggregator initialized with {len(self._sources)} sources: "
-                   f"{', '.join(s.name for s in self._sources)}")
+        logger.info(
+            "Aggregator initialized with %d sources: %s",
+            len(self._sources),
+            ", ".join(s.name for s in self._sources),
+        )
     
     @property
     def sources(self) -> List[VulnerabilitySource]:
         """Get list of sources in priority order."""
         return self._sources
     
-    async def fetch_and_sync(self, cpe_name: str, db: Session, stop_on_confirmed: bool = True) -> Tuple[bool, int]:
+    async def fetch_and_sync(
+        self, cpe_name: str, db: Session, stop_on_confirmed: bool = True,
+    ) -> Tuple[bool, int, Optional[Dict[str, Any]]]:
+        """Run the source chain.
+
+        Returns ``(confirmed, cves_added, ai_prediction)`` where
+        ``ai_prediction`` is ``None`` (AI didn't run / not enabled / failed) or
+        ``{"score": float, "vector": str | None}`` — a *severity hint*, never a
+        confirmation. The frontend uses it to surface a third tier (yellow)
+        between "no finding" (green) and "confirmed CVE" (red).
+        """
         confirmed = False
         total_cves_added = 0
+        confirmed_source: Optional[str] = None
+        confirmed_cve_ids: set[str] = set()
+        ai_prediction: Optional[Dict[str, Any]] = None
 
         for source in self._sources:
             logger.info(f"[Aggregator] Trying source: {source.name}")
@@ -69,6 +87,16 @@ class Aggregator:
             except Exception as e:
                 logger.exception(f"Unexpected error from {source.name}: {e}")
                 continue
+
+            # Capture the AI prediction even though it never sets
+            # affects_version=True — it's an informational severity hint.
+            if source.name == "AI" and results:
+                first = results[0]
+                if first.get("base_score") is not None:
+                    ai_prediction = {
+                        "score": float(first["base_score"]),
+                        "vector": first.get("base_vector"),
+                    }
 
             if not results:
                 logger.debug(f"{source.name}: No results for {cpe_name}")
@@ -88,6 +116,8 @@ class Aggregator:
                     added = self._write_normalized(result, db, original_cpe=cpe_name)
                     total_cves_added += added
                     confirmed = True
+                    confirmed_source = confirmed_source or source.name
+                    confirmed_cve_ids.update(result.get("cve_ids") or [])
                 except Exception as e:
                     logger.error(f"Failed to write result from {source.name}: {e}", exc_info=True)
                     db.rollback()
@@ -102,38 +132,21 @@ class Aggregator:
             except Exception as e:
                 db.rollback()
                 logger.error(f"DB commit failed: {e}")
-                return False, 0
+                return False, 0, ai_prediction
 
             if stop_on_confirmed:
                 break  # Only break once we've actually confirmed vulnerability
 
-        # AI fallback: runs when no source confirmed a vulnerability
-        if not confirmed:
-            logger.info(f"[AI Fallback] Assessing {cpe_name}...")
-            try:
-                ai_results = await self._ai_assess_vulnerability(cpe_name)
-                for result in ai_results:
-                    try:
-                        added = self._write_normalized(result, db, original_cpe=cpe_name)
-                        total_cves_added += added
-                        confirmed = True
-                    except Exception as e:
-                        logger.error(f"Failed to write AI result: {e}", exc_info=True)
-                        db.rollback()
-                        continue
-                if confirmed:
-                    try:
-                        db.commit()
-                        logger.info(
-                            f"✓ [AI] VULNERABLE: {cpe_name} → {total_cves_added} assessments added"
-                        )
-                    except Exception as e:
-                        db.rollback()
-                        logger.error(f"DB commit failed for AI results: {e}")
-            except Exception as e:
-                logger.warning(f"AI assessment failed for {cpe_name}: {e}")
-        elif not confirmed:
-            logger.debug(f"[AI Fallback] Skipped for {cpe_name} — AI disabled in settings")
+        # When a non-EUVD source produced the hits, ask EUVD for each CVE-ID
+        # and back-fill the EUVD-only fields (euvd_id, base_score, description,
+        # references) on records we just wrote. Skip for AI-synthesized IDs
+        # since they carry no real CVE.
+        if (
+            confirmed
+            and confirmed_source not in (self._euvd.name, "AI")
+            and confirmed_cve_ids
+        ):
+            await self._enrich_with_euvd(confirmed_cve_ids, db)
 
         if not confirmed:
             try:
@@ -143,13 +156,13 @@ class Aggregator:
                 logger.warning(f"Failed to store unknown marker: {e}")
                 db.rollback()
 
-        return confirmed, total_cves_added
-    
+        return confirmed, total_cves_added, ai_prediction
+
     async def fetch_bulk(
         self,
         cpe_list: List[str],
         db: Session
-    ) -> Dict[str, Tuple[bool, int]]:
+    ) -> Dict[str, Tuple[bool, int, Optional[Dict[str, Any]]]]:
         """
         Query multiple CPEs concurrently.
         
@@ -169,11 +182,11 @@ class Aggregator:
                 output[cpe] = result
             else:
                 logger.error(f"Error processing {cpe}: {result}")
-                output[cpe] = (False, 0)
+                output[cpe] = (False, 0, None)
         
         return output
     
-    async def health_check(self) -> Dict[str, Dict[str, any]]:
+    async def health_check(self) -> Dict[str, Dict[str, Any]]:
         """
         Check health of all sources.
         
@@ -199,46 +212,100 @@ class Aggregator:
         return results
     
     # ========================================================================
-    # AI Fallback Assessment
+    # EUVD enrichment
     # ========================================================================
-    
-    async def _ai_assess_vulnerability(self, cpe_name: str) -> List[NormalizedVulnerabilityDict]:
+
+    async def _enrich_with_euvd(self, cve_ids: set[str], db: Session) -> None:
+        """For each CVE id, fetch the matching EUVD record and back-fill any
+        EUVD-only fields on the existing CveItem (``euvd_id``, base score,
+        description, references). Failures are non-fatal.
+
+        Skips CVEs that already carry an ``euvd_id`` (no work to do) and runs
+        the remaining EUVD lookups concurrently with a bounded semaphore so a
+        single 40-CVE advisory doesn't serialise into a minute of wall time.
         """
-        Use local DistilBERT model to predict CVSS score for a package.
-        Returns synthesized vulnerability assessment if positive.
-        """
+        # Filter out CVEs we've already enriched in a prior call — saves us
+        # a network round-trip per duplicate.
+        pending = [
+            cve_id for cve_id in cve_ids
+            if not (
+                db.query(CveItem)
+                  .filter(CveItem.cve_id == cve_id, CveItem.euvd_id.isnot(None))
+                  .first()
+            )
+        ]
+        if not pending:
+            return
+
+        sem = asyncio.Semaphore(8)
+
+        async def _one(cve_id: str):
+            async with sem:
+                try:
+                    return cve_id, await self._euvd.search_by_cve(cve_id)
+                except Exception as e:
+                    logger.warning(f"[Enrich] EUVD lookup failed for {cve_id}: {e}")
+                    return cve_id, None
+
+        fetched = await asyncio.gather(*[_one(c) for c in pending])
+
+        added = 0
+        for cve_id, item in fetched:
+            if not item:
+                continue
+
+            cve = db.query(CveItem).filter(CveItem.cve_id == cve_id).first()
+            if not cve:
+                continue
+
+            if not cve.euvd_id and item.get("id"):
+                cve.euvd_id = item["id"]
+                added += 1
+
+            desc = (item.get("description") or "").strip()
+            if desc and not db.query(Description).filter(
+                Description.cve_id == cve_id, Description.lang == "en"
+            ).first():
+                db.add(Description(cve_id=cve_id, lang="en", value=desc))
+
+            for url in (item.get("references") or "").split("\n"):
+                url = url.strip()
+                if not url:
+                    continue
+                if not db.query(Reference).filter(
+                    Reference.cve_id == cve_id, Reference.url == url
+                ).first():
+                    db.add(Reference(cve_id=cve_id, url=url, source="EUVD", tags=[]))
+
+            base_score = item.get("baseScore")
+            if base_score is not None and not db.query(CvssMetric).filter(
+                CvssMetric.cve_id == cve_id, CvssMetric.source == "EUVD"
+            ).first():
+                try:
+                    score = float(base_score)
+                except (ValueError, TypeError):
+                    score = None
+                if score is not None and 0 <= score <= 10:
+                    db.add(CvssMetric(
+                        cve_id=cve_id,
+                        version=str(item.get("baseScoreVersion") or "3.1"),
+                        cvssData={
+                            "baseScore": score,
+                            "vectorString": item.get("baseScoreVector"),
+                            "version": item.get("baseScoreVersion", "3.1"),
+                        },
+                        source="EUVD",
+                        type="Primary",
+                    ))
+
         try:
-            from cvss_prediction.cvss_prediction import predict_cvss
-        except ImportError as e:
-            logger.warning(f"[AI] Local model not installed or error loading it: {e}")
-            return []
-        
-        try:
-            # We don't have a full description anymore since Ollama is gone, 
-            # so we provide a generic description based on the CPE name for the model.
-            generic_description = f"Security vulnerability in {cpe_name}."
-            
-            logger.debug(f"[AI] Predicting CVSS for {cpe_name} using local model...")
-            
-            # Predict the CVSS score using our local model
-            cvss_score = float(predict_cvss(generic_description))
-            logger.info(f"[AI] {cpe_name}: Predicted CVSS Score: {cvss_score}")
-            
-            # Return synthesized result
-            return [{
-                "cve_ids": [f"AI-{cpe_name.replace(':', '-')}"],
-                "description": f"[Local AI Assessment] Potential vulnerability in {cpe_name}. Estimated severity score: {cvss_score}",
-                "affects_version": True,
-                "cvss_score": cvss_score,
-                "cvss_vector": None,
-                "source": "Local-CVSS-Model",
-                "euvd_id": None,
-            }]
-        
+            db.commit()
+            if added:
+                logger.info(f"[Enrich] EUVD enriched {added} CVE(s) with euvd_id")
         except Exception as e:
-            logger.warning(f"[AI] Assessment failed for {cpe_name}: {e}")
-            return []
-    
+            db.rollback()
+            logger.warning(f"[Enrich] commit failed: {e}")
+
     # ========================================================================
     # Private Database Writing Methods
     # ========================================================================

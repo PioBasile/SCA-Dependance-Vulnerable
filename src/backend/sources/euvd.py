@@ -47,6 +47,41 @@ class EUVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin
             logger.warning(f"[EUVD] fetch_by_id failed for {euvd_id}: {e}")
             return None
 
+    async def search_by_cve(self, cve_id: str) -> Optional[Dict[str, Any]]:
+        """Look up an EUVD entry that aliases ``cve_id``.
+
+        EUVD's `/search?text=CVE-XXXX-YYYY` returns up to ``size`` items whose
+        aliases mention the CVE; we walk the page and return the first item
+        whose alias list actually contains ``cve_id``.
+        """
+        cache_key = self._get_cache_key("search_by_cve", cve_id)
+        cached = self._get_from_cache(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            await self._apply_rate_limit()
+            async with make_client() as client:
+                resp = await client.get(
+                    EUVD_SEARCH,
+                    params={"text": cve_id, "size": 25},
+                    timeout=10.0,
+                )
+                resp.raise_for_status()
+                items = resp.json().get("items", [])
+        except Exception as e:
+            logger.warning(f"[EUVD] search_by_cve({cve_id}) failed: {e}")
+            return None
+
+        for item in items:
+            aliases = (item.get("aliases") or "").split("\n")
+            if any(a.strip().upper() == cve_id.upper() for a in aliases):
+                self._set_in_cache(cache_key, item)
+                return item
+
+        self._set_in_cache(cache_key, None)
+        return None
+
     async def search_by_product(
         self, vendor: str, product: str, size: int = 100
     ) -> List[Dict[str, Any]]:
@@ -77,7 +112,6 @@ class EUVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin
         try:
             parsed = parse_cpe(cpe)
             target_version = parsed["version"]
-            target_product = parsed["product"]
             name_candidates = resolve_euvd_names(cpe)
             results: List[NormalizedVulnerabilityDict] = []
 
@@ -86,9 +120,13 @@ class EUVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin
                 if not items:
                     continue
 
+                # Match against the canonical product name we just searched
+                # with — that name is what EUVD entries use, and it lets us
+                # reject sibling products like "Spring Cloud Function" when
+                # the user queried "spring framework".
                 for item in items:
                     affected = item_affects_version(
-                        item, target_version, product_hint=target_product
+                        item, target_version, product_hint=product
                     )
                     cve_ids = [
                         a.strip() for a in item.get("aliases", "").split("\n")

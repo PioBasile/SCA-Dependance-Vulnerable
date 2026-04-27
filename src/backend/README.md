@@ -1,29 +1,76 @@
-# Natif
+# Backend — Vulnerability Aggregator
 
-## Créer l'environnement python
+FastAPI service that queries multiple vulnerability databases (EUVD, OSV, NVD,
+GitHub Advisory) with a local AI fallback, and exposes a unified API for the
+frontend.
+
+## Architecture
 
 ```
+core/        Shared infrastructure (config, logging, types, exceptions)
+models/      SQLAlchemy ORM + Pydantic schemas
+sources/     One adapter per vulnerability source
+matching/    CPE parsing & version range comparison
+services/    Aggregator + query service (business logic)
+cvss_prediction/  Local DistilBERT model used as AI fallback
+main.py      FastAPI entry point
+```
+
+## Quick start (local)
+
+```bash
 python3 -m venv venv
-
 source venv/bin/activate
-
 pip install -r requirements.txt
+
+cp .env.example .env      # then fill in DATABASE_URL / NVD_API_KEY / GITHUB_TOKEN
+
+uvicorn main:app --reload
 ```
 
-A chaque nouveau terminal : `source venv/bin/activate`
+The CVSS prediction model file (`cvss_prediction/model/cvss_model.pt`) must be
+downloaded separately from <https://urlix.me/cvss-models>.
 
-Télécharger le modèle : `https://urlix.me/cvss-models` et le mettre dans `/cvss_prediction/model`
+## Quick start (Docker)
 
-## Lancer le serveur
+```bash
+docker compose up --build
+```
 
-`uvicorn main:app --reload`
+The compose stack provisions a MySQL 8 instance and the API on port 8000. The
+model is fetched automatically during the image build.
 
-# Docker
+## Endpoints
 
-## Lancer
+| Method | Path                          | Description                           |
+|--------|-------------------------------|---------------------------------------|
+| GET    | `/`                           | Service status                        |
+| GET    | `/health`                     | Per-source health check               |
+| GET    | `/sync/status`                | Database sync status                  |
+| POST   | `/query`                      | Query one CPE                         |
+| POST   | `/query/bulk`                 | Query a list of CPEs (concurrent)     |
+| GET    | `/cve/{cve_id}`               | CVE detail                            |
+| GET    | `/cve/search?q=...`           | Search CVEs by ID or description      |
+| GET    | `/config_nodes_cpe_match/`    | Frontend-compatible CPE query         |
 
-`sudo docker compose up --build`
+## Source chain
 
-## Stopper
+Sources are tried in priority order: **EUVD → OSV → NVD → GitHub → AI**. For
+each source, if a vulnerability is confirmed for the queried version, the
+result is stored and the chain stops. The AI source is the local
+CVSS-prediction model and only runs when the previous four came up empty
+*and* `AI_FALLBACK_ENABLED=true` in `.env`. When still nothing is found, an
+`UNKNOWN` marker is stored to avoid re-querying.
 
-`sudo docker compose down`
+## Configuration
+
+All runtime configuration lives in `.env`:
+
+```ini
+DATABASE_URL=mysql+pymysql://user:password@host:3306/db
+NVD_API_KEY=...
+GITHUB_TOKEN=...
+DEBUG=false
+LOG_LEVEL=INFO
+AI_FALLBACK_ENABLED=false
+```

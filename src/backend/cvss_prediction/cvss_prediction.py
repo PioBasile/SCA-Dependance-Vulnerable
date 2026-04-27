@@ -44,26 +44,19 @@ print("[cvss_prediction.py] CVSS prediction model loaded")
 
 def predict_cvss(description: str) -> float:
     if not description:
-        return "Missing description"
+        raise ValueError("description must not be empty")
 
-    enc = tokenizer(pretreat_desc(description), max_length=256, padding="max_length", truncation=True, return_tensors="pt").to(DEVICE)
+    enc = tokenizer(
+        pretreat_desc(description),
+        max_length=256,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt",
+    ).to(DEVICE)
 
     with torch.no_grad():
         logits = model(enc["input_ids"], enc["attention_mask"])
 
-    m = {
-        name: MAPS[name][logit.argmax(1).item()]
-        for name, logit in zip(METRICS, logits)
-    }
-
+    m = {name: MAPS[name][logit.argmax(1).item()] for name, logit in zip(METRICS, logits)}
     vec = "CVSS:3.1/" + "/".join(f"{name}:{m[name]}" for name in METRICS)
-    score = CVSS3(vec).base_score
-
-    # print(f"Model vector : {vec}")
-    # print(f"Model score : {score}")
-
-    return score
-
-# Test
-# while True:
-#     predict_cvss(pretreat_desc(input("Description : ")))
+    return CVSS3(vec).base_score

@@ -94,36 +94,82 @@ def resolve_euvd_names(cpe: str) -> list[tuple[str, str]]:
     return result
 
 
+# Explicit (cpe_vendor, cpe_product) → "groupId:artifactId" mapping.
+# Used by the OSV / GitHub Advisory sources, both of which require the canonical
+# Maven coordinate. Maintaining this manually avoids a network round-trip to
+# ``search.maven.org`` for every query and removes a class of false negatives
+# that occurred when the artifact lookup returned the wrong groupId.
+MAVEN_TO_OSV: dict[tuple, str] = {
+    ("apache", "log4j-core"):              "org.apache.logging.log4j:log4j-core",
+    ("apache", "log4j-api"):               "org.apache.logging.log4j:log4j-api",
+    ("apache", "log4j-slf4j2-impl"):       "org.apache.logging.log4j:log4j-slf4j2-impl",
+    ("apache", "struts2-core"):            "org.apache.struts:struts2-core",
+    ("apache", "commons-text"):            "org.apache.commons:commons-text",
+    ("apache", "commons-collections4"):    "org.apache.commons:commons-collections4",
+    ("apache", "commons-lang3"):           "org.apache.commons:commons-lang3",
+    ("apache", "tomcat-embed-core"):       "org.apache.tomcat.embed:tomcat-embed-core",
+    ("apache", "shiro-core"):              "org.apache.shiro:shiro-core",
+    ("commons-collections", "commons-collections"): "commons-collections:commons-collections",
+    ("commons-io", "commons-io"):          "commons-io:commons-io",
+    ("snakeyaml", "snakeyaml"):            "org.yaml:snakeyaml",
+    ("org.yaml", "snakeyaml"):             "org.yaml:snakeyaml",
+    ("com.h2database", "h2"):              "com.h2database:h2",
+    ("hibernate-core", "hibernate-core"):  "org.hibernate:hibernate-core",
+    ("org.hibernate", "hibernate-core"):   "org.hibernate:hibernate-core",
+    ("com.fasterxml.jackson.core", "jackson-databind"): "com.fasterxml.jackson.core:jackson-databind",
+    ("com.fasterxml.jackson.core", "jackson-annotations"): "com.fasterxml.jackson.core:jackson-annotations",
+    ("com.fasterxml.jackson.dataformat", "jackson-dataformat-yaml"): "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml",
+    ("com.fasterxml.woodstox", "woodstox-core"): "com.fasterxml.woodstox:woodstox-core",
+    ("com.thoughtworks.xstream", "xstream"): "com.thoughtworks.xstream:xstream",
+    ("com.alibaba", "fastjson"):           "com.alibaba:fastjson",
+    ("com.google.guava", "guava"):         "com.google.guava:guava",
+    ("io.netty", "netty-all"):             "io.netty:netty-all",
+    ("io.netty", "netty-buffer"):          "io.netty:netty-buffer",
+    ("netty-all", "netty-all"):            "io.netty:netty-all",
+    ("netty-buffer", "netty-buffer"):      "io.netty:netty-buffer",
+    ("org.eclipse.jetty", "jetty-server"): "org.eclipse.jetty:jetty-server",
+    ("org.springframework", "spring-core"):    "org.springframework:spring-core",
+    ("org.springframework", "spring-webmvc"):  "org.springframework:spring-webmvc",
+    ("org.springframework", "spring-beans"):   "org.springframework:spring-beans",
+    ("org.springframework", "spring-context"): "org.springframework:spring-context",
+    ("spring-cloud-function-context", "spring-cloud-function-context"):
+        "org.springframework.cloud:spring-cloud-function-context",
+    ("spring-cloud-gateway-server", "spring-cloud-gateway-server"):
+        "org.springframework.cloud:spring-cloud-gateway-server",
+    ("org.bouncycastle", "bcprov-jdk15on"): "org.bouncycastle:bcprov-jdk15on",
+    ("org.bouncycastle", "bcprov-jdk18on"): "org.bouncycastle:bcprov-jdk18on",
+}
+
+
 @lru_cache(maxsize=1024)
 def resolve_maven_group_id(artifact_id: str) -> str | None:
+    """Last-resort lookup against Maven Central for unknown artifacts."""
     url = f"https://search.maven.org/solrsearch/select?q=a:{artifact_id}&rows=1&wt=json"
-    
     try:
         with httpx.Client() as client:
             response = client.get(url, timeout=5.0)
             response.raise_for_status()
-            data = response.json()
-            docs = data.get("response", {}).get("docs", [])
-            
+            docs = response.json().get("response", {}).get("docs", [])
             if docs:
-                found_group_id = docs[0].get("g")
-                logger.debug(f"[CPE Mapper] Resolved {artifact_id} -> {found_group_id}")
-                return found_group_id
+                return docs[0].get("g")
     except Exception as e:
         logger.warning(f"[CPE Mapper] Failed to resolve Maven Group ID for {artifact_id}: {e}")
-        
     return None
 
+
 def cpe_to_osv_package(cpe: str) -> dict | None:
-    parsed  = parse_cpe(cpe)
-    vendor  = parsed["vendor"]
+    parsed = parse_cpe(cpe)
+    vendor = parsed["vendor"]
     product = parsed["product"]
+
+    key = (vendor, product)
+    if key in MAVEN_TO_OSV:
+        return {"name": MAVEN_TO_OSV[key], "ecosystem": "Maven"}
 
     if "." in vendor:
         return {"name": f"{vendor}:{product}", "ecosystem": "Maven"}
 
-    dynamic_group_id = resolve_maven_group_id(product)
-    if dynamic_group_id:
-        return {"name": f"{dynamic_group_id}:{product}", "ecosystem": "Maven"}
-
+    group = resolve_maven_group_id(product)
+    if group:
+        return {"name": f"{group}:{product}", "ecosystem": "Maven"}
     return None

@@ -1,10 +1,9 @@
 """Base class for all vulnerability sources."""
 from abc import ABC, abstractmethod
-from typing import List, Optional
-from core.types import NormalizedVulnerabilityDict
+from typing import Any, List, Optional
+
 from core.logger import get_logger
-from core.config import make_client
-from core.exceptions import SourceError, SourceTimeoutError
+from core.types import NormalizedVulnerabilityDict
 
 logger = get_logger(__name__)
 
@@ -105,8 +104,11 @@ class CachingSourceMixin:
         """Generate cache key."""
         return f"{self.name}:{method}:{':'.join(str(a) for a in args)}"
     
-    def _get_from_cache(self, key: str) -> Optional[any]:
+    def _get_from_cache(self, key: str) -> Optional[Any]:
         """Get value from cache."""
+        # >>> CACHE BYPASS — in-memory per-source cache disabled for testing.
+        return None
+        # <<< CACHE BYPASS
         if key in self._cache:
             value, timestamp = self._cache[key]
             import time
@@ -114,8 +116,8 @@ class CachingSourceMixin:
                 return value
             del self._cache[key]
         return None
-    
-    def _set_in_cache(self, key: str, value: any) -> None:
+
+    def _set_in_cache(self, key: str, value: Any) -> None:
         """Store value in cache."""
         import time
         self._cache[key] = (value, time.time())
