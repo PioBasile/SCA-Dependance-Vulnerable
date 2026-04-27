@@ -15,6 +15,8 @@ LABEL_MAPS = {
     "availabilityImpact":    {"N": 0, "L": 1, "H": 2},
 }
 
+JAVA_KEYWORDS = [":java", ":openjdk", ":oracle:jdk", ":jre", ":apache_tomcat", ":spring_framework", "maven", "gradle", "hibernate", "struts", "log4j", "jakarta", "jboss","wildfly", "weblogic", "websphere", "junit", "netty", "quartz", "vaadin", "lucene", "solr"]
+
 def get_english_description(descriptions):
     for entry in descriptions:
         if entry.get("lang") == "en":
@@ -78,9 +80,24 @@ def pretreat_desc(text: str) -> str:
 
     return text
 
-def process_and_append(file_path, output_csv):
-    import pandas as pd  # offline-only dependency
+def identify_ecosystem(cve_data, description):
+    desc_low = description.lower()
 
+    configs = cve_data.get("configurations", [])
+    for config in configs:
+        for node in config.get("nodes", []):
+            for cpe_match in node.get("cpeMatch", []):
+                cpe = cpe_match.get("criteria", "").lower()
+
+                if any(x in cpe for x in JAVA_KEYWORDS):
+                    return "java"
+
+    if "java" in desc_low and "javascript" not in desc_low:
+        return "java"
+
+    return "other"
+
+def process_and_append(file_path, output_csv, env):
     data_to_write = []
 
     with open(file_path, 'r', encoding='utf-8') as f:
@@ -91,6 +108,10 @@ def process_and_append(file_path, output_csv):
             desc = get_english_description(cve.get("descriptions", []))
 
             if not desc: continue
+
+            ecosystem = identify_ecosystem(cve, desc)
+            if env != "all" and env != ecosystem:
+                continue
 
             pre_treated_desc = pretreat_desc(desc)
 
@@ -108,7 +129,9 @@ def process_and_append(file_path, output_csv):
 
 if __name__ == "__main__":
     json_files = sorted(Path("./data").glob("nvdcve-2.0-*.json"))
+    environment = "java"
+    # environment = "all"
 
     for f in json_files:
         print(f"Processing [{f.name}]")
-        process_and_append(f, "data/dataset_cvss.csv")
+        process_and_append(f, "data/dataset_cvss.csv", environment)
