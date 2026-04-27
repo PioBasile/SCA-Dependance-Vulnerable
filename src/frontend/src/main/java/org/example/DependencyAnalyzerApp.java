@@ -1,16 +1,12 @@
 package org.example;
-
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.embed.swing.SwingNode;
 import javafx.scene.Cursor;
 import javafx.scene.Scene;
-import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
-import javafx.scene.control.CheckBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextField;
-import javafx.scene.image.Image;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Text;
@@ -18,10 +14,7 @@ import javafx.scene.text.TextFlow;
 import javafx.stage.Stage;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
-
 import javax.swing.*;
-
-import org.example.Services.CveService;
 import org.graphstream.graph.Graph;
 import org.graphstream.graph.Node;
 import org.graphstream.graph.implementations.SingleGraph;
@@ -34,15 +27,29 @@ import io.github.cdimascio.dotenv.Dotenv;
 import java.io.File;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.ConcurrentModificationException;
 import java.util.List;
-
-
 
 public class DependencyAnalyzerApp extends Application {
 
     private Graph graph;
     private static final Dotenv dotenv = Dotenv.load();
+    private static final String BACKEND_URL = dotenv.get("BACKEND_URL");
+    private static final String CPE_API = "/config_nodes_cpe_match/?cpe_criteria=";
+    private static final String API = BACKEND_URL + CPE_API;
+
+    private static String formatCpe(String cpe) {
+        String[] parts = cpe.split(":");
+        if (parts.length >= 6) {
+            String vendor = parts[3];
+            String product = parts[4];
+            String version = parts[5];
+            return vendor.equals(product) ? product + " " + version
+                                          : vendor + ":" + product + " " + version;
+        }
+        return cpe;
+    }
 
     @Override
     public void start(Stage primaryStage) {
@@ -55,10 +62,11 @@ public class DependencyAnalyzerApp extends Application {
         titleLabel.setPadding(new Insets(10, 0, 0, 10));
 
         Text descriptionText = new Text(
-                "Each dependency is a node in the graph. Colour reflects the verdict from the backend chain:"
-                        + "  RED — a real CVE was confirmed by EUVD / OSV / NVD / GitHub for this version."
-                        + "  YELLOW — no real CVE was found, but the local AI model produced a severity hint (the score is shown in the node label, e.g. 'AI: 8.4')."
-                        + "  GREEN — no source flagged this dependency and AI did not produce a hint."
+                "The blue Application node sits at the center, each dependency (green) is connected to it, and every confirmed CVE is attached to its dependency."
+                        + "  CVE colour reflects its CVSS base score:"
+                        + "  RED — score > 8.5 (high)."
+                        + "  ORANGE — score > 6.5 (medium)."
+                        + "  GREEN — score ≤ 6.5 (low)."
         );
         descriptionText.setFill(Color.WHITE);
 
@@ -77,8 +85,8 @@ public class DependencyAnalyzerApp extends Application {
         rootNodeLabel.setTextFill(Color.BLUE);
         Label apiSymbol = new Label("●");
         apiSymbol.setStyle("-fx-font-size: 60px;");
-        apiSymbol.setTextFill(Color.GREEN);
-        Label apiLabel = new Label("Dependency nodes colors");
+        apiSymbol.setTextFill(Color.web("#006400"));
+        Label apiLabel = new Label("Application root  /  Dependency");
         Region spacer1 = new Region(); spacer1.setPrefWidth(25);
         apiSymbols.getChildren().addAll(rootNodeLabel, apiSymbol, spacer1, apiLabel);
 
@@ -87,30 +95,23 @@ public class DependencyAnalyzerApp extends Application {
         Label linkLine = new Label("─");
         linkLine.setStyle("-fx-font-size: 30px;");
         linkLine.setTextFill(Color.BLACK);
-        Label linkLabel = new Label("Links between Dependencies and Vulnerabilities");
+        Label linkLabel = new Label("Links Application → Dependency → CVE");
         Region spacer21 = new Region(); spacer21.setPrefWidth(8);
         linkSymbol.getChildren().addAll(spacer21, linkLine, linkLabel);
 
         HBox vulnSymbols = new HBox(-2);
         vulnSymbols.setAlignment(Pos.CENTER_LEFT);
         Label greenSymbol = new Label("●"); greenSymbol.setStyle("-fx-font-size: 40px;"); greenSymbol.setTextFill(Color.GREEN);
-        Label yellowSymbol = new Label("●"); yellowSymbol.setStyle("-fx-font-size: 40px;"); yellowSymbol.setTextFill(Color.GOLD);
+        Label yellowSymbol = new Label("●"); yellowSymbol.setStyle("-fx-font-size: 40px;"); yellowSymbol.setTextFill(Color.ORANGE);
         Label redSymbol = new Label("●"); redSymbol.setStyle("-fx-font-size: 40px;"); redSymbol.setTextFill(Color.RED);
-        Label vulnLabel = new Label("Clean / AI-predicted / Confirmed CVE");
+        Label vulnLabel = new Label("CVE severity: low (≤ 6.5) / medium (> 6.5) / high (> 8.5)");
         Region spacer3 = new Region(); spacer3.setPrefWidth(5);
         vulnSymbols.getChildren().addAll(greenSymbol, yellowSymbol, redSymbol, spacer3, vulnLabel);
         Region verticalSpace = new Region(); verticalSpace.setPrefHeight(40);
         symbolsBox.getChildren().addAll(apiSymbols, linkSymbol, verticalSpace, vulnSymbols);
 
         StackPane symbolsPane = new StackPane(symbolsBox);
-        StackPane.setMargin(symbolsBox, new Insets(0, 0, 0, 10));
-        HBox checkboxContainer = new HBox(10);
-        checkboxContainer.setAlignment(Pos.CENTER);
-        checkboxContainer.setPadding(new Insets(5, 0, 10, 0));
-        CheckBox checkBox = new CheckBox();
-        Label checkBoxLabel = new Label("Trace Transitive Vulnerable Dependencies");
-        checkBoxLabel.setTextFill(Color.WHITE);
-        checkboxContainer.getChildren().addAll(checkBox, checkBoxLabel);
+        StackPane.setMargin(symbolsBox, new Insets(0, 15, 0, 15));
 
         Label titleText = new Label("Visualize Data");
         titleText.setTextFill(Color.WHITE);
@@ -135,8 +136,6 @@ public class DependencyAnalyzerApp extends Application {
             String projectPath = textInputField.getText();
             if (projectPath == null || projectPath.isEmpty()) return;
 
-            // Guard: disable the button until this run finishes so a second
-            // click doesn't spawn a parallel analysis. Re-enabled in finally.
             analyzeButton.setDisable(true);
             analyzeButton.setText("ANALYZING…");
 
@@ -145,24 +144,22 @@ public class DependencyAnalyzerApp extends Application {
                     SwingUtilities.invokeLater(() -> {
                         synchronized (graph) {
                             graph.clear();
+                            Node app = graph.addNode("Application");
+                            app.setAttribute("ui.label", "Application");
+                            app.setAttribute("ui.style", "fill-color: #1e6fbf; size: 40px; text-size: 17px; text-color: black; text-style: bold;");
                         }
                     });
 
                     SbomExtractor.ExtractSbom(projectPath, 2);
                     File sbomFile = new File("sbom.cyclonedx.json");
-                    if (!sbomFile.exists()) {
-                        return;
-                    }
+                    if (!sbomFile.exists()) return;
 
                     List<String> cpes = SbomExtractor.extractCpeFromCycloneDx("sbom.cyclonedx.json");
+
                     for (String cpe : cpes) {
                         try {
-                            System.out.println("Calling Backend for CPE: " + cpe);
-                            String encodedCpe = URLEncoder.encode(cpe, StandardCharsets.UTF_8.toString());
-                            String backendUrl = dotenv.get("BACKEND_URL", "http://127.0.0.1:8000");
-                            String url = backendUrl + "/config_nodes_cpe_match/?cpe_criteria=" + encodedCpe;
-                            String result = CveService.fetchDataFromApi(url);
-                            System.out.println("Backend result: " + result);
+                            String encodedCpe = URLEncoder.encode(cpe, StandardCharsets.UTF_8);
+                            String result = CveService.fetchDataFromApi(API + encodedCpe);
 
                             SwingUtilities.invokeLater(() -> {
                                 synchronized (graph) {
@@ -170,21 +167,18 @@ public class DependencyAnalyzerApp extends Application {
                                         Node n = graph.getNode(cpe);
                                         if (n == null) {
                                             n = graph.addNode(cpe);
-                                            n.setAttribute("ui.label", cpe);
+                                            n.setAttribute("ui.label", formatCpe(cpe));
+                                        }
+                                        String appEdgeId = "Application->" + cpe;
+                                        if (graph.getNode("Application") != null && graph.getEdge(appEdgeId) == null) {
+                                            graph.addEdge(appEdgeId, "Application", cpe);
                                         }
 
-                                        // Three tiers:
-                                        //   found == true                       → RED  (real CVE confirmed)
-                                        //   found == false + ai_prediction set  → YELLOW (AI severity hint)
-                                        //   otherwise                            → GREEN (clean)
-                                        boolean isVulnerable = false;
                                         Double aiScore = null;
+                                        List<JsonNode> cveEntries = new ArrayList<>();
                                         try {
                                             ObjectMapper mapper = new ObjectMapper();
                                             JsonNode jsonResponse = mapper.readTree(result);
-                                            if (jsonResponse.has("found") && jsonResponse.get("found").asBoolean()) {
-                                                isVulnerable = true;
-                                            }
                                             JsonNode aiNode = jsonResponse.path("ai_prediction");
                                             if (aiNode != null && !aiNode.isMissingNode() && !aiNode.isNull()) {
                                                 JsonNode scoreNode = aiNode.path("score");
@@ -192,22 +186,35 @@ public class DependencyAnalyzerApp extends Application {
                                                     aiScore = scoreNode.asDouble();
                                                 }
                                             }
-                                        } catch (Exception e) {
-                                            isVulnerable = false;
+                                            JsonNode vulns = jsonResponse.path("vulnerabilities");
+                                            if (vulns.isArray()) {
+                                                for (JsonNode v : vulns) {
+                                                    if (!v.path("cve_id").asText("").isEmpty()) cveEntries.add(v);
+                                                }
+                                            }
+                                        } catch (Exception ignored) {}
+
+                                        n.setAttribute("ui.style", "fill-color: #00B500; size: 20px; text-size: 12px;");
+                                        if (aiScore != null) {
+                                            n.setAttribute("ui.label", String.format("%s (AI: %.1f)", formatCpe(cpe), aiScore));
                                         }
 
-                                        if (isVulnerable) {
-                                            n.setAttribute("ui.style", "fill-color: red; size: 25px; text-size: 15px;");
-                                            System.out.println("VULNERABILITY DETECTED for " + cpe);
-                                        } else if (aiScore != null) {
-                                            // AI predicted severity but no real CVE was confirmed.
-                                            // Surface the score directly in the node label so the
-                                            // user can tell at a glance how confident the model is.
-                                            n.setAttribute("ui.style", "fill-color: gold; size: 22px; text-size: 13px;");
-                                            n.setAttribute("ui.label", String.format("%s  (AI: %.1f)", cpe, aiScore));
-                                            System.out.printf("AI HINT for %s: predicted CVSS %.1f (no real CVE)%n", cpe, aiScore);
-                                        } else {
-                                            n.setAttribute("ui.style", "fill-color: green; size: 20px; text-size: 12px;");
+                                        for (JsonNode cve : cveEntries) {
+                                            String cveId = cve.path("cve_id").asText();
+                                            double score = cve.path("base_score").asDouble(0.0);
+                                            String color = score > 8.5 ? "red" : score > 6.5 ? "orange" : "green";
+
+                                            Node cveNode = graph.getNode(cveId);
+                                            if (cveNode == null) {
+                                                cveNode = graph.addNode(cveId);
+                                            }
+                                            cveNode.setAttribute("ui.label", String.format("%s (%.1f)", cveId, score));
+                                            cveNode.setAttribute("ui.style", "fill-color: " + color + "; size: 16px; text-size: 11px;");
+
+                                            String edgeId = cpe + "->" + cveId;
+                                            if (graph.getEdge(edgeId) == null) {
+                                                graph.addEdge(edgeId, cpe, cveId);
+                                            }
                                         }
                                     } catch (ConcurrentModificationException cme) {
                                         System.err.println("Concurrent modification detected for " + cpe + ", will retry on next event");
@@ -217,7 +224,7 @@ public class DependencyAnalyzerApp extends Application {
 
                             Thread.sleep(200);
                         } catch (Exception e) {
-                            e.printStackTrace();
+                            System.err.println("Error during analyse : " + e.getMessage());
                         }
                     }
                 } finally {
@@ -234,7 +241,7 @@ public class DependencyAnalyzerApp extends Application {
         buttonBox.setPadding(new Insets(25, 0, 0, 0));
 
         VBox mainContent = new VBox(10);
-        mainContent.getChildren().addAll(symbolsPane, titleTextContainer, InputFieldContainer, checkboxContainer, buttonBox);
+        mainContent.getChildren().addAll(symbolsPane, titleTextContainer, InputFieldContainer, buttonBox);
         leftSection.getChildren().addAll(titleLabel, descriptionTextFlow, mainContent);
 
         SwingNode swingNode = new SwingNode();
@@ -261,9 +268,5 @@ public class DependencyAnalyzerApp extends Application {
             ViewPanel viewPanel = (ViewPanel) viewer.addDefaultView(false);
             swingNode.setContent(viewPanel);
         });
-    }
-
-    public static void main(String[] args) {
-        launch(args);
     }
 }
