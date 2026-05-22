@@ -21,19 +21,21 @@ logger = get_logger(__name__)
 
 
 class Aggregator:
-    """Orchestrates querying multiple vulnerability sources in priority order.
+    """Orchestrates querying multiple vulnerability sources in parallel.
 
-    Sources are tried in sequence:
+    Primary sources run concurrently for every CPE query:
       1. EUVD    — European database, primary enrichment
       2. OSV     — Open Source Vulnerabilities
       3. NVD     — National Vulnerability Database (CPE→CVE index)
       4. GitHub  — GitHub Security Advisories
-      5. AI      — local CVSS-prediction model (last-resort, only when
-                   ``settings.ai.enabled`` is true)
 
-    Iteration stops at the first source that confirms a vulnerability for the
-    queried version. EUVD is then re-queried by CVE-ID to back-fill its
-    metadata onto records that were created by another source.
+    All confirmed results are merged and written to the database. EUVD is then
+    queried by CVE-ID for any records that lack EUVD metadata (euvd_id,
+    base_score, description).
+
+      5. AI      — local CVSS-prediction model — runs only when all four
+                   primary sources return nothing and ``settings.ai.enabled``
+                   is true. It never confirms a CVE; it emits a severity hint.
     """
 
     def __init__(self):
@@ -54,100 +56,134 @@ class Aggregator:
     async def fetch_and_sync(
         self, cpe_name: str, db: Session, stop_on_confirmed: bool = True,
     ) -> Tuple[bool, int, Optional[Dict[str, Any]]]:
-        """Run the source chain.
+        """Fan out to all primary sources in parallel, merge results, fall back to AI.
 
         Returns ``(confirmed, cves_added, ai_prediction)`` where
         ``ai_prediction`` is ``None`` (AI didn't run / not enabled / failed) or
         ``{"score": float, "vector": str | None}`` — a *severity hint*, never a
         confirmation. The frontend uses it to surface a third tier (yellow)
         between "no finding" (green) and "confirmed CVE" (red).
+
+        ``stop_on_confirmed`` is kept for API compatibility but is no longer
+        used — all primary sources always run concurrently.
         """
         confirmed = False
         total_cves_added = 0
-        confirmed_source: Optional[str] = None
-        confirmed_cve_ids: set[str] = set()
         ai_prediction: Optional[Dict[str, Any]] = None
+        confirmed_cve_ids: set[str] = set()
 
-        for source in self._sources:
-            logger.info(f"[Aggregator] Trying source: {source.name}")
+        # ── Step 1: fan out EUVD + OSV + NVD + GitHub concurrently ─────────
+        ai_source = next((s for s in self._sources if s.name == "AI"), None)
+        primary_sources = [s for s in self._sources if s.name != "AI"]
+
+        async def _query_one(source: VulnerabilitySource):
+            logger.info(f"[Aggregator] Querying source: {source.name}")
             try:
-                logger.debug(f"Querying {source.name} for {cpe_name}")
-                results = await source.query(cpe_name)
+                return source.name, await source.query(cpe_name)
             except SourceError as e:
                 if e.retryable:
                     logger.warning(f"Retryable error from {source.name}: {e}")
                 else:
                     logger.error(f"Fatal error from {source.name}: {e}")
-                continue
+                return source.name, []
             except Exception as e:
                 logger.exception(f"Unexpected error from {source.name}: {e}")
-                continue
+                return source.name, []
 
-            # Capture the AI prediction even though it never sets
-            # affects_version=True — it's an informational severity hint.
-            if source.name == "AI" and results:
-                first = results[0]
-                if first.get("base_score") is not None:
-                    ai_prediction = {
-                        "score": float(first["base_score"]),
-                        "vector": first.get("base_vector"),
-                    }
+        source_results = await asyncio.gather(
+            *[_query_one(s) for s in primary_sources]
+        )
 
+        # ── Step 2: collect confirmed (affects_version=True) results ────────
+        all_confirmed: List[NormalizedVulnerabilityDict] = []
+        corroborated_cves: set[str] = set()   # CVEs seen by ≥1 non-EUVD source
+        for source_name, results in source_results:
             if not results:
-                logger.debug(f"{source.name}: No results for {cpe_name}")
+                logger.debug(f"{source_name}: No results for {cpe_name}")
                 continue
-
-            vulnerable_results = [r for r in results if r.get("affects_version")]
-
-            if not vulnerable_results:
+            vulnerable = [r for r in results if r.get("affects_version")]
+            if not vulnerable:
                 logger.info(
-                    f"{source.name}: Product known, version not affected for {cpe_name}"
+                    f"{source_name}: Product known, version not affected for {cpe_name}"
                 )
-                # Do NOT break here — other sources may have CVE data for this version
+                continue
+            logger.info(
+                f"[Aggregator] {source_name}: {len(vulnerable)} confirmed result(s)"
+                f" for {cpe_name}"
+            )
+            all_confirmed.extend(vulnerable)
+            for r in vulnerable:
+                confirmed_cve_ids.update(r.get("cve_ids") or [])
+                if source_name != "EUVD":
+                    corroborated_cves.update(r.get("cve_ids") or [])
+
+        # ── Step 2b: drop EUVD-exclusive CVEs not corroborated by any other source
+        # EUVD has the lowest precision (~55%) due to broad version ranges.
+        # OSV and GitHub together cover the same CVEs with near-perfect precision,
+        # so a CVE found only by EUVD is far more likely to be a false positive
+        # than a genuine gap. Dropping them cuts AGG FPs without hurting recall.
+        filtered: List[NormalizedVulnerabilityDict] = []
+        euvd_dropped = 0
+        for r in all_confirmed:
+            if r.get("source") == "EUVD":
+                r_cves = set(r.get("cve_ids") or [])
+                if r_cves and not (r_cves & corroborated_cves):
+                    euvd_dropped += 1
+                    continue
+            filtered.append(r)
+        if euvd_dropped:
+            logger.info(
+                f"[Aggregator] Dropped {euvd_dropped} EUVD-exclusive result(s) "
+                f"not corroborated by OSV/NVD/GitHub for {cpe_name}"
+            )
+        all_confirmed = filtered
+        # Recompute confirmed_cve_ids after filtering
+        confirmed_cve_ids = {
+            cve for r in all_confirmed for cve in (r.get("cve_ids") or [])
+        }
+
+        # ── Step 3: write merged results to DB ──────────────────────────────
+        for result in all_confirmed:
+            try:
+                added = self._write_normalized(result, db, original_cpe=cpe_name)
+                total_cves_added += added
+                confirmed = True
+            except Exception as e:
+                logger.error(f"Failed to write result: {e}", exc_info=True)
+                db.rollback()
                 continue
 
-            for result in vulnerable_results:
-                try:
-                    added = self._write_normalized(result, db, original_cpe=cpe_name)
-                    total_cves_added += added
-                    confirmed = True
-                    confirmed_source = confirmed_source or source.name
-                    confirmed_cve_ids.update(result.get("cve_ids") or [])
-                except Exception as e:
-                    logger.error(f"Failed to write result from {source.name}: {e}", exc_info=True)
-                    db.rollback()
-                    continue
-
+        if confirmed:
             try:
                 db.commit()
-                logger.info(
-                    f"✓ {source.name} VULNERABLE: {cpe_name} → "
-                    f"{total_cves_added} CVEs added"
-                )
+                logger.info(f"✓ {cpe_name} → {total_cves_added} CVEs added")
             except Exception as e:
                 db.rollback()
                 logger.error(f"DB commit failed: {e}")
                 return False, 0, ai_prediction
 
-            if stop_on_confirmed:
-                break  # Only break once we've actually confirmed vulnerability
+            # Enrich CVEs that lack EUVD metadata (euvd_id, base_score, …).
+            # _enrich_with_euvd self-filters: skips CVEs that already have euvd_id
+            # (e.g. those found directly by EUVD in the parallel fan-out).
+            if confirmed_cve_ids:
+                await self._enrich_with_euvd(confirmed_cve_ids, db)
 
-        # When a non-EUVD source produced the hits, ask EUVD for each CVE-ID
-        # and back-fill the EUVD-only fields (euvd_id, base_score, description,
-        # references) on records we just wrote. Skip for AI-synthesized IDs
-        # since they carry no real CVE.
-        if (
-            confirmed
-            and confirmed_source not in (self._euvd.name, "AI")
-            and confirmed_cve_ids
-        ):
-            await self._enrich_with_euvd(confirmed_cve_ids, db)
+        # ── Step 4: AI — last resort when all primary sources found nothing ──
+        if not confirmed and ai_source and settings.ai.enabled:
+            logger.info(f"[Aggregator] Trying source: {ai_source.name}")
+            try:
+                ai_results = await ai_source.query(cpe_name)
+                if ai_results:
+                    first = ai_results[0]
+                    if first.get("base_score") is not None:
+                        ai_prediction = {
+                            "score": float(first["base_score"]),
+                            "vector": first.get("base_vector"),
+                        }
+            except Exception as e:
+                logger.exception(f"Unexpected error from {ai_source.name}: {e}")
 
-        # EUVD never provides structured version ranges. Run OSV as a lightweight
-        # range-only enrichment pass so CpeMatch rows get versionStart/End filled.
-        if confirmed and confirmed_source != "AI" and confirmed_cve_ids:
-            await self._enrich_with_osv_ranges(cpe_name, confirmed_cve_ids, db)
-
+        # ── Step 5: NOT_FOUND marker when nothing confirmed ──────────────────
         if not confirmed:
             try:
                 self._store_unknown_marker(cpe_name, db)

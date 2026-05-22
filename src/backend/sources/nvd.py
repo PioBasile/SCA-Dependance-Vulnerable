@@ -1,6 +1,7 @@
 """NVD (National Vulnerability Database) source implementation."""
 import logging
 import asyncio
+import re
 from typing import List, Dict, Tuple, Optional
 from core.config import make_client, NVD_API_BASE, NVD_API_KEY, settings
 from core.types import NormalizedVulnerabilityDict
@@ -65,18 +66,23 @@ class NVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin)
                 # than requesting a generic page of results.
                 headers = {"apiKey": NVD_API_KEY} if NVD_API_KEY else {}
                 resp = await client.get(
-                    NVD_API_BASE, 
-                    params={"cveId": "CVE-1999-0001"},
+                    NVD_API_BASE,
+                    params={"cveId": "CVE-2021-44228"},
                     headers=headers,
                     timeout=10.0
                 )
-                is_healthy = resp.status_code == 200
+                is_healthy = resp.status_code < 500
                 if not is_healthy:
                     logger.warning(f"[NVD] Health check failed: status {resp.status_code}")
                 return is_healthy
             except Exception as e:
                 logger.warning(f"[NVD] Health check failed: {e}")
                 return False
+
+    # Maven ecosystem appends classifiers like -jre, -android, -lts to the
+    # version component that NVD's CPE dictionary never includes. Strip them
+    # so "32.0-jre" becomes "32.0" and matches NVD's "google:guava:32.0" entry.
+    _VERSION_QUALIFIER_RE = re.compile(r"-(jre|android|lts|jdk\d*)\d*$", re.IGNORECASE)
 
     def _normalize_cpe(self, cpe: str) -> List[str]:
         """Normalize CPE to try multiple variants from mapping table."""
@@ -85,19 +91,31 @@ class NVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin)
         product = parts[4] if len(parts) > 4 else ""
         version = parts[5] if len(parts) > 5 else "*"
 
+        # Strip Maven version qualifiers NVD doesn't know about (e.g. 32.0-jre → 32.0)
+        version = self._VERSION_QUALIFIER_RE.sub("", version)
+
         candidates = []
+        has_explicit = False
         key = (vendor, product)
         if key in NVD_CPE_MAP:
             v, p = NVD_CPE_MAP[key]
             candidates.append(f"cpe:2.3:a:{v}:{p}:{version}:*:*:*:*:*:*:*")
+            has_explicit = True
 
         short_vendor = vendor.split(".")[-1] if "." in vendor else vendor
         short_key = (short_vendor, product)
         if short_key in NVD_CPE_MAP and short_key != key:
             v, p = NVD_CPE_MAP[short_key]
             candidates.append(f"cpe:2.3:a:{v}:{p}:{version}:*:*:*:*:*:*:*")
+            has_explicit = True
 
-        candidates.append(cpe)
+        # Only fall back to the raw CPE when no explicit mapping exists.
+        # When a mapping is known, the raw Maven-style vendor (e.g.
+        # "com.google.guava") is never in NVD's CPE dictionary — querying it
+        # just wastes a full NVD round-trip (~13 s).
+        if not has_explicit:
+            candidates.append(cpe)
+
         seen, result = set(), []
         for c in candidates:
             if c not in seen:

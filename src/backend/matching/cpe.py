@@ -8,7 +8,6 @@ logger = get_logger(__name__)
 MAVEN_TO_EUVD: dict[tuple, tuple] = {
     ("apache", "log4j-core"):              ("apache", "log4j2"),
     ("apache", "log4j-api"):               ("apache", "log4j2"),
-    ("apache", "log4j-slf4j2-impl"):       ("apache", "log4j2"),
     ("org.apache.logging.log4j", "log4j-core"): ("apache", "log4j2"),
     ("org.apache.logging.log4j", "log4j-api"):  ("apache", "log4j2"),
     ("apache", "struts2-core"):            ("apache", "struts"),
@@ -23,12 +22,10 @@ MAVEN_TO_EUVD: dict[tuple, tuple] = {
     ("com.fasterxml.jackson.core", "jackson-annotations"):           ("fasterxml", "jackson-databind"),
     ("com.fasterxml.jackson.dataformat", "jackson-dataformat-yaml"): ("fasterxml", "jackson-databind"),
     ("commons-collections", "commons-collections"): ("apache", "commons collections"),
-    ("apache", "commons-collections4"):    ("apache", "commons collections"),
     ("apache", "commons-text"):            ("apache", "commons text"),
     ("apache", "commons-lang3"):           ("apache", "commons lang"),
     ("commons-io", "commons-io"):          ("apache", "commons io"),
     ("org.apache.commons", "commons-text"):         ("apache", "commons text"),
-    ("org.apache.commons", "commons-collections4"): ("apache", "commons collections"),
     ("netty-all",    "netty-all"):    ("netty", "netty"),
     ("netty-buffer", "netty-buffer"): ("netty", "netty"),
     ("io.netty",     "netty-all"):    ("netty", "netty"),
@@ -67,25 +64,32 @@ def resolve_euvd_names(cpe: str) -> list[tuple[str, str]]:
 
     candidates = []
     key = (vendor, product)
+    has_explicit = False
     if key in MAVEN_TO_EUVD:
         candidates.append(MAVEN_TO_EUVD[key])
+        has_explicit = True
 
     short_vendor = vendor.split(".")[-1] if "." in vendor else vendor
     short_key    = (short_vendor, product)
     if short_key in MAVEN_TO_EUVD and short_key != key:
         candidates.append(MAVEN_TO_EUVD[short_key])
+        has_explicit = True
 
-    raw_vendor  = short_vendor.replace("-", " ")
-    raw_product = product.replace("-", " ").replace("_", " ")
-    raw = (raw_vendor, raw_product)
-    if raw not in candidates:
-        candidates.append(raw)
+    # Only fall back to heuristic vendor/product names when there is no
+    # explicit mapping — otherwise short_vendor can be a meaningless segment
+    # like "core" (from "com.fasterxml.jackson.core") that produces noise.
+    if not has_explicit:
+        raw_vendor  = short_vendor.replace("-", " ")
+        raw_product = product.replace("-", " ").replace("_", " ")
+        raw = (raw_vendor, raw_product)
+        if raw not in candidates:
+            candidates.append(raw)
 
-    short_product = product.split("-")[0]
-    if len(short_product) > 4 and short_product != product:
-        short = (raw_vendor, short_product)
-        if short not in candidates:
-            candidates.append(short)
+        short_product = product.split("-")[0]
+        if len(short_product) > 4 and short_product != product:
+            short = (raw_vendor, short_product)
+            if short not in candidates:
+                candidates.append(short)
 
     seen, result = set(), []
     for c in candidates:
@@ -164,6 +168,11 @@ def resolve_maven_group_id(artifact_id: str) -> str | None:
     return None
 
 
+# Per-artifact asyncio locks: prevent concurrent coroutines from firing
+# duplicate Maven Central requests before lru_cache is populated.
+_maven_locks: dict[str, asyncio.Lock] = {}
+
+
 async def cpe_to_osv_package(cpe: str) -> dict | None:
     parsed = parse_cpe(cpe)
     vendor = parsed["vendor"]
@@ -176,9 +185,13 @@ async def cpe_to_osv_package(cpe: str) -> dict | None:
     if "." in vendor:
         return {"name": f"{vendor}:{product}", "ecosystem": "Maven"}
 
-    # resolve_maven_group_id is sync + blocking — run it in a thread pool
-    # so it doesn't stall the event loop during the fallback HTTP call.
-    group = await asyncio.to_thread(resolve_maven_group_id, product)
+    # resolve_maven_group_id is sync + blocking — run it in a thread pool.
+    # Guard with a per-artifact lock so concurrent coroutines don't all fire
+    # the HTTP call before lru_cache is populated (thundering-herd on cold start).
+    if product not in _maven_locks:
+        _maven_locks[product] = asyncio.Lock()
+    async with _maven_locks[product]:
+        group = await asyncio.to_thread(resolve_maven_group_id, product)
     if group:
         return {"name": f"{group}:{product}", "ecosystem": "Maven"}
     return None

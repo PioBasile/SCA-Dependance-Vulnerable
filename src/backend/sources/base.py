@@ -80,18 +80,20 @@ class CachingSourceMixin:
     
     def _get_from_cache(self, key: str) -> Optional[Any]:
         """Get value from cache."""
-        import time
-        if key in self._cache:
-            value, timestamp = self._cache[key]
-            if time.time() - timestamp < self._cache_ttl:
-                return value
-            del self._cache[key]
         return None
+        # import time
+        # if key in self._cache:
+        #     value, timestamp = self._cache[key]
+        #     if time.time() - timestamp < self._cache_ttl:
+        #         return value
+        #     del self._cache[key]
+        # return None
 
     def _set_in_cache(self, key: str, value: Any) -> None:
         """Store value in cache."""
-        import time
-        self._cache[key] = (value, time.time())
+        return
+        # import time
+        # self._cache[key] = (value, time.time())
 
 
 class RateLimitedSourceMixin:
