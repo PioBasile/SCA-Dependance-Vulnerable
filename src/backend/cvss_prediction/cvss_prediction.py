@@ -1,3 +1,4 @@
+import logging as _logging
 from pathlib import Path
 import torch
 import torch.nn as nn
@@ -6,6 +7,7 @@ from cvss import CVSS3
 from cvss_prediction.parse_nvd_json_to_csv import pretreat_desc
 
 logging.set_verbosity_error()
+_logger = _logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_PATH = Path(__file__).resolve().parent / "model" / "cvss_model.pt"
@@ -40,7 +42,7 @@ model = Model().to(DEVICE)
 model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
 model.eval()
 
-print("[cvss_prediction.py] CVSS prediction model loaded")
+_logger.info("CVSS prediction model loaded")
 
 def predict_cvss(description: str) -> float:
     if not description:

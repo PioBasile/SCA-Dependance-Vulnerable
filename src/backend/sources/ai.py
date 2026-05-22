@@ -45,7 +45,7 @@ def _description_for_product(vendor: str, product: str) -> Optional[str]:
     if not vendor or not product:
         return None
     try:
-        from sqlalchemy import desc as sql_desc
+        from sqlalchemy import Float, cast, desc as sql_desc
 
         from models import CpeMatch, CvssMetric, Description, Node, SessionLocal
 
@@ -59,7 +59,7 @@ def _description_for_product(vendor: str, product: str) -> Optional[str]:
                 .filter(CpeMatch.criteria.ilike(pattern))
                 .filter(Description.lang == "en")
                 .filter(Description.value.isnot(None))
-                .order_by(sql_desc(CvssMetric.id))  # most-recent metric → typically highest-severity CVE
+                .order_by(sql_desc(cast(CvssMetric.cvssData['baseScore'], Float)))
                 .first()
             )
             if row and row[0]:

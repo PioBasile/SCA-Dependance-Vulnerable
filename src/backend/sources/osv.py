@@ -106,5 +106,5 @@ class OSVSource(VulnerabilitySource, CachingSourceMixin):
                 return results
 
         except Exception as e:
-            logger.info(f"[OSV] query({cpe}) failed: {e}")
+            logger.warning(f"[OSV] query({cpe}) failed: {e}")
             return []
