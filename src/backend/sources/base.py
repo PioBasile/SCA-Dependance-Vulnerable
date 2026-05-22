@@ -66,32 +66,6 @@ class VulnerabilitySource(ABC):
         """
         pass
     
-    async def search(self, query: str, **kwargs) -> List[dict]:
-        """
-        Generic search method (optional override by subclasses).
-        
-        Args:
-            query: Search query
-            **kwargs: Additional parameters
-        
-        Returns:
-            List of search results
-        """
-        logger.warning(f"[{self.name}] search() not implemented")
-        return []
-    
-    async def fetch_by_id(self, item_id: str) -> Optional[dict]:
-        """
-        Fetch a specific vulnerability by ID (optional override).
-        
-        Args:
-            item_id: Vulnerability ID
-        
-        Returns:
-            Vulnerability data or None
-        """
-        logger.warning(f"[{self.name}] fetch_by_id() not implemented")
-        return None
 
 
 class CachingSourceMixin:
@@ -106,19 +80,22 @@ class CachingSourceMixin:
     
     def _get_from_cache(self, key: str) -> Optional[Any]:
         """Get value from cache."""
+        return None  # cache disabled for debugging
 
-        if key in self._cache:
-            value, timestamp = self._cache[key]
-            import time
-            if time.time() - timestamp < self._cache_ttl:
-                return value
-            del self._cache[key]
-        return None
+        # if key in self._cache:
+        #     value, timestamp = self._cache[key]
+        #     import time
+        #     if time.time() - timestamp < self._cache_ttl:
+        #         return value
+        #     del self._cache[key]
+        # return None
 
     def _set_in_cache(self, key: str, value: Any) -> None:
         """Store value in cache."""
-        import time
-        self._cache[key] = (value, time.time())
+        pass  # cache disabled for debugging
+
+        # import time
+        # self._cache[key] = (value, time.time())
 
 
 class RateLimitedSourceMixin:

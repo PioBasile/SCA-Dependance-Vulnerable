@@ -149,6 +149,14 @@ class NVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin)
         try:
             parsed = parse_cpe(cpe)
             target_version = parsed["version"]
+
+            # NVD uses real vendor names from its own CPE dictionary. Syft-style
+            # CPEs where vendor==product (e.g. micrometer-core:micrometer-core)
+            # never appear in NVD — skip immediately to avoid a 20-second timeout.
+            if parsed["vendor"] == parsed["product"] and parsed["vendor"] not in NVD_CPE_MAP:
+                logger.debug(f"[NVD] skipping {cpe}: vendor==product not in NVD CPE map")
+                return []
+
             headers = {"apiKey": NVD_API_KEY} if NVD_API_KEY else {}
             cpe_variants = self._normalize_cpe(cpe)
 

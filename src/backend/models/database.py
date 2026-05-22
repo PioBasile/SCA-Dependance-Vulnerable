@@ -45,8 +45,8 @@ class CveItem(Base):
     """Main CVE vulnerability record."""
     __tablename__ = "cve"
     
-    cve_id = Column(String(255), primary_key=True, index=True)
-    euvd_id = Column(String(255), nullable=True, index=True, unique=True)
+    cve_id = Column(String(255), primary_key=True)
+    euvd_id = Column(String(255), nullable=True, unique=True)
     sourceIdentifier = Column("source_identifier", String(255), nullable=False)
     vulnStatus = Column("vuln_status", String(255), nullable=False, default="PUBLISHED")
     published = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -57,8 +57,6 @@ class CveItem(Base):
     references = relationship("Reference", back_populates="cve_item", cascade="all, delete-orphan")
     cvss_metrics = relationship("CvssMetric", back_populates="cve_item", cascade="all, delete-orphan")
     nodes = relationship("Node", back_populates="cve_item", cascade="all, delete-orphan")
-    fix_commits = relationship("FixCommit", back_populates="cve_item", cascade="all, delete-orphan")
-    
     __table_args__ = (
         Index("idx_cve_euvd", "euvd_id"),
         Index("idx_cve_status", "vuln_status"),
@@ -153,6 +151,7 @@ class CpeMatch(Base):
     versionEndIncluding = Column(String(100), nullable=True)
     versionStartExcluding = Column(String(100), nullable=True)
     versionEndExcluding = Column(String(100), nullable=True)
+    scanned_at = Column(DateTime, nullable=True)
     
     # Relationships
     node = relationship("Node", back_populates="cpe_matches")
@@ -160,28 +159,6 @@ class CpeMatch(Base):
     __table_args__ = (
         Index("idx_cpe_node", "node_id"),
         Index("idx_cpe_criteria", "criteria"),
-    )
-
-
-class FixCommit(Base):
-    """Fix/patch commits for CVE."""
-    __tablename__ = "fix_commit"
-    
-    id = Column("fix_commit_id", Integer, primary_key=True, autoincrement=True)
-    cve_id = Column(String(255), ForeignKey("cve.cve_id", ondelete="CASCADE"), nullable=False)
-    commit_id = Column(String(255), nullable=False)
-    repository = Column(String(500), nullable=True)
-    message = Column(Text, nullable=True)
-    patch = Column(Text, nullable=False)
-    url = Column(String(500), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    
-    # Relationships
-    cve_item = relationship("CveItem", back_populates="fix_commits")
-    
-    __table_args__ = (
-        Index("idx_fix_cve", "cve_id"),
-        Index("idx_fix_commit", "commit_id"),
     )
 
 

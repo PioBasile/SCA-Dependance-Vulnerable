@@ -51,3 +51,4 @@ class CveQueryResponse(BaseModel):
     found: bool
     count: int
     vulnerabilities: List[VulnerabilitySummaryResponse]
+    ai_prediction: Optional[Dict[str, Any]] = None

@@ -51,11 +51,6 @@ class Aggregator:
             ", ".join(s.name for s in self._sources),
         )
     
-    @property
-    def sources(self) -> List[VulnerabilitySource]:
-        """Get list of sources in priority order."""
-        return self._sources
-    
     async def fetch_and_sync(
         self, cpe_name: str, db: Session, stop_on_confirmed: bool = True,
     ) -> Tuple[bool, int, Optional[Dict[str, Any]]]:
@@ -151,6 +146,7 @@ class Aggregator:
         if not confirmed:
             try:
                 self._store_unknown_marker(cpe_name, db)
+                db.commit()
                 logger.info(f"Unknown marker stored for {cpe_name}")
             except Exception as e:
                 logger.warning(f"Failed to store unknown marker: {e}")
@@ -393,46 +389,69 @@ class Aggregator:
                 db.add(node_obj)
                 db.flush()
 
-            if original_cpe and not db.query(CpeMatch).filter(
-                CpeMatch.node_id == node_obj.id,
-                CpeMatch.criteria == original_cpe
-            ).first():
-                db.add(CpeMatch(
-                    node_id=node_obj.id,
-                    vulnerable=True,
-                    criteria=original_cpe,
-                ))
+            if original_cpe:
+                existing_match = db.query(CpeMatch).filter(
+                    CpeMatch.node_id == node_obj.id,
+                    CpeMatch.criteria == original_cpe,
+                ).first()
+                if existing_match:
+                    existing_match.scanned_at = datetime.utcnow()
+                    if result.get("version_end_excluding") and not existing_match.versionEndExcluding:
+                        existing_match.versionEndExcluding = result["version_end_excluding"]
+                    if result.get("version_start_including") and not existing_match.versionStartIncluding:
+                        existing_match.versionStartIncluding = result["version_start_including"]
+                    if result.get("version_end_including") and not existing_match.versionEndIncluding:
+                        existing_match.versionEndIncluding = result["version_end_including"]
+                    if result.get("version_start_excluding") and not existing_match.versionStartExcluding:
+                        existing_match.versionStartExcluding = result["version_start_excluding"]
+                else:
+                    db.add(CpeMatch(
+                        node_id=node_obj.id,
+                        vulnerable=True,
+                        criteria=original_cpe,
+                        versionStartIncluding=result.get("version_start_including"),
+                        versionEndExcluding=result.get("version_end_excluding"),
+                        versionStartExcluding=result.get("version_start_excluding"),
+                        versionEndIncluding=result.get("version_end_including"),
+                        scanned_at=datetime.utcnow(),
+                    ))
         
         return cves_added
     
     def _store_unknown_marker(self, cpe_name: str, db: Session) -> None:
-        """Store marker for unknown/not-vulnerable CPE."""
+        """Store (or refresh) a NOT_FOUND marker for a CPE.
+
+        Updating ``scanned_at`` on the existing marker resets its TTL so
+        ``is_recently_not_found`` returns True and we skip re-querying sources
+        on the next request within the TTL window.
+        """
         marker_id = f"UNKNOWN:{cpe_name[:200]}"
-        if db.query(CveItem).filter(CveItem.cve_id == marker_id).first():
+        existing = db.query(CveItem).filter(CveItem.cve_id == marker_id).first()
+        if existing:
+            node_obj = db.query(Node).filter(Node.cve_id == marker_id).first()
+            if node_obj:
+                match = db.query(CpeMatch).filter(CpeMatch.node_id == node_obj.id).first()
+                if match:
+                    match.scanned_at = datetime.utcnow()
             return
-        
-        try:
-            cve = CveItem(
-                cve_id=marker_id,
-                sourceIdentifier="UNKNOWN",
-                vulnStatus="NOT_FOUND",
-                published=datetime.utcnow(),
-                lastModified=datetime.utcnow(),
-            )
-            db.add(cve)
-            db.flush()
-            
-            node_obj = Node(cve_id=marker_id, operator="OR", negate=False)
-            db.add(node_obj)
-            db.flush()
-            
-            db.add(CpeMatch(
-                node_id=node_obj.id,
-                vulnerable=False,
-                criteria=cpe_name
-            ))
-            db.commit()
-        except Exception as e:
-            logger.error(f"Failed to store unknown marker for {cpe_name}: {e}")
-            db.rollback()
-            raise
+
+        cve = CveItem(
+            cve_id=marker_id,
+            sourceIdentifier="UNKNOWN",
+            vulnStatus="NOT_FOUND",
+            published=datetime.utcnow(),
+            lastModified=datetime.utcnow(),
+        )
+        db.add(cve)
+        db.flush()
+
+        node_obj = Node(cve_id=marker_id, operator="OR", negate=False)
+        db.add(node_obj)
+        db.flush()
+
+        db.add(CpeMatch(
+            node_id=node_obj.id,
+            vulnerable=False,
+            criteria=cpe_name,
+            scanned_at=datetime.utcnow(),
+        ))

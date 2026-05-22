@@ -37,9 +37,9 @@ class GitHubSource(VulnerabilitySource):
                 logger.warning(f"[GitHub] Health check failed: {e}")
                 return False
 
-    def _resolve_package(self, cpe: str) -> str | None:
+    async def _resolve_package(self, cpe: str) -> str | None:
         """Return ``"groupId:artifactId"`` for Maven CPEs, else ``None``."""
-        pkg = cpe_to_osv_package(cpe)
+        pkg = await cpe_to_osv_package(cpe)
         if not pkg:
             return None
         if (pkg.get("ecosystem") or "").lower() != "maven":
@@ -90,10 +90,34 @@ class GitHubSource(VulnerabilitySource):
 
         return False
 
+    @staticmethod
+    def _extract_version_range(advisory: dict, package_name: str) -> tuple[str | None, str | None]:
+        """Return (version_start_including, version_end_excluding) for package_name.
+
+        Uses ``first_patched_version`` as the end-exclusive bound and parses
+        ``>= X`` from ``vulnerable_version_range`` as the start-inclusive bound.
+        """
+        wanted = (package_name or "").lower()
+        for vuln in advisory.get("vulnerabilities", []):
+            pkg = vuln.get("package") or {}
+            if wanted and (pkg.get("name") or "").lower() != wanted:
+                continue
+
+            end_excl = vuln.get("first_patched_version") or None
+            start_incl: str | None = None
+            vvr = (vuln.get("vulnerable_version_range") or "").strip()
+            for clause in vvr.split(","):
+                clause = clause.strip()
+                if clause.startswith(">="):
+                    start_incl = clause[2:].strip() or None
+                    break
+            return start_incl, end_excl
+        return None, None
+
     async def query(self, cpe: str) -> list[dict]:
         parsed         = parse_cpe(cpe)
         target_version = parsed["version"]
-        package_name   = self._resolve_package(cpe)
+        package_name   = await self._resolve_package(cpe)
 
         if not package_name:
             logger.debug(f"[GitHub] No package mapping for {cpe}")
@@ -162,17 +186,20 @@ class GitHubSource(VulnerabilitySource):
                     base_score = (cvss.get("score")
                                   or score_map.get(severity.lower()))
 
+                    v_start, v_end = self._extract_version_range(advisory, package_name)
                     results.append({
-                        "cve_ids":         cve_ids,
-                        "euvd_id":         None,
-                        "source":          self.name,
-                        "base_score":      base_score,
-                        "base_vector":     cvss.get("vector_string"),
-                        "base_version":    "3.1",
-                        "description":     advisory.get("summary", ""),
-                        "references":      advisory.get("references", []),
-                        "affects_version": affected,
-                        "raw":             advisory,
+                        "cve_ids":                cve_ids,
+                        "euvd_id":                None,
+                        "source":                 self.name,
+                        "base_score":             base_score,
+                        "base_vector":            cvss.get("vector_string"),
+                        "base_version":           "3.1",
+                        "description":            advisory.get("summary", ""),
+                        "references":             advisory.get("references", []),
+                        "affects_version":        affected,
+                        "version_start_including": v_start,
+                        "version_end_excluding":   v_end,
+                        "raw":                    advisory,
                     })
 
                 matched = [r for r in results if r["affects_version"]]

@@ -32,12 +32,34 @@ class OSVSource(VulnerabilitySource, CachingSourceMixin):
                 logger.warning(f"[OSV] Health check failed: {e}")
                 return False
 
+    @staticmethod
+    def _extract_version_range(vuln: dict) -> tuple[str | None, str | None]:
+        """Return (version_start_including, version_end_excluding) from OSV vuln.
+
+        Walks the first ECOSYSTEM or SEMVER range's events and returns the
+        introduced/fixed pair. Returns (None, None) when no structured range
+        is present.
+        """
+        for affected in vuln.get("affected", []):
+            for rng in affected.get("ranges", []):
+                if rng.get("type") not in ("ECOSYSTEM", "SEMVER"):
+                    continue
+                introduced: str | None = None
+                for event in rng.get("events", []):
+                    if "introduced" in event:
+                        val = event["introduced"]
+                        introduced = None if val == "0" else val
+                    elif "fixed" in event:
+                        return introduced, event["fixed"]
+                return introduced, None
+        return None, None
+
     async def query(self, cpe: str) -> List[NormalizedVulnerabilityDict]:
         """Query OSV for vulnerabilities affecting a CPE."""
         try:
             parsed = parse_cpe(cpe)
             version = parsed["version"]
-            package = cpe_to_osv_package(cpe)
+            package = await cpe_to_osv_package(cpe)
 
             if not package:
                 logger.info(f"[OSV] No OSV package mapping for {cpe}")
@@ -64,6 +86,7 @@ class OSVSource(VulnerabilitySource, CachingSourceMixin):
 
                     # OSV already confirmed this version is affected
                     if cve_ids:
+                        v_start, v_end = self._extract_version_range(vuln)
                         results.append({
                             "cve_ids": cve_ids,
                             "euvd_id": None,
@@ -74,6 +97,8 @@ class OSVSource(VulnerabilitySource, CachingSourceMixin):
                             "description": vuln.get("summary", ""),
                             "references": [r.get("url", "") for r in vuln.get("references", []) if r.get("url")],
                             "affects_version": True,  # OSV confirms it
+                            "version_start_including": v_start,
+                            "version_end_excluding": v_end,
                             "raw": vuln,
                         })
 

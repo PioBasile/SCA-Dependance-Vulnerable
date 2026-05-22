@@ -81,13 +81,13 @@ async def sync_status(db: Session = Depends(get_db)):
 @app.post("/query", response_model=CveQueryResponse, tags=["Query"])
 async def query_cpe(request: CPEQueryRequest, db: Session = Depends(get_db)):
 
+    ai_prediction = None
     cves = VulnerabilityService.search_by_cpe(request.cpe, db)
-    if not cves:
+    if not cves and not VulnerabilityService.is_recently_not_found(request.cpe, db):
         logger.info("CPE %s not in cache, querying sources", request.cpe)
-        found, _ = await aggregator.fetch_and_sync(request.cpe, db)
+        found, _, ai_prediction = await aggregator.fetch_and_sync(request.cpe, db)
         cves = VulnerabilityService.search_by_cpe(request.cpe, db) if found else []
 
-    
     vulnerabilities = [
         {
             "cve_id": cve.cve_id,
@@ -126,14 +126,6 @@ async def query_bulk(request: CPEBulkQueryRequest, db: Session = Depends(get_db)
 # CVE detail & search
 # ---------------------------------------------------------------------------
 
-@app.get("/cve/{cve_id}", tags=["CVE"])
-async def get_cve(cve_id: str, db: Session = Depends(get_db)):
-    detail = VulnerabilityService.get_cve_detail(cve_id, db)
-    if not detail:
-        raise HTTPException(status_code=404, detail=f"CVE {cve_id} not found")
-    return detail
-
-
 @app.get("/cve/search", tags=["CVE"])
 async def search_cves(
     q: str = Query(..., min_length=2),
@@ -144,6 +136,14 @@ async def search_cves(
     return {"query": q, "count": len(results), "results": results}
 
 
+@app.get("/cve/{cve_id}", tags=["CVE"])
+async def get_cve(cve_id: str, db: Session = Depends(get_db)):
+    detail = VulnerabilityService.get_cve_detail(cve_id, db)
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"CVE {cve_id} not found")
+    return detail
+
+
 # ---------------------------------------------------------------------------
 # Frontend compatibility — the Java desktop client calls this path.
 # ---------------------------------------------------------------------------
@@ -151,13 +151,11 @@ async def search_cves(
 @app.get("/config_nodes_cpe_match/", tags=["Compatibility"])
 async def get_cpe_match(cpe_criteria: str = Query(...), db: Session = Depends(get_db)):
     ai_prediction = None
-    
+
     cves = VulnerabilityService.search_by_cpe(cpe_criteria, db)
 
-    if not cves:
-        result = await aggregator.fetch_and_sync(cpe_criteria, db)
-        found = result[0]
-
+    if not cves and not VulnerabilityService.is_recently_not_found(cpe_criteria, db):
+        found, _, ai_prediction = await aggregator.fetch_and_sync(cpe_criteria, db)
         cves = VulnerabilityService.search_by_cpe(cpe_criteria, db) if found else []
 
     nodes_data = []

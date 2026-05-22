@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 from functools import lru_cache
 from core.logger import get_logger
@@ -138,6 +139,12 @@ MAVEN_TO_OSV: dict[tuple, str] = {
         "org.springframework.cloud:spring-cloud-gateway-server",
     ("org.bouncycastle", "bcprov-jdk15on"): "org.bouncycastle:bcprov-jdk15on",
     ("org.bouncycastle", "bcprov-jdk18on"): "org.bouncycastle:bcprov-jdk18on",
+    # Syft-style CPEs where vendor==product but Maven groupId is different
+    ("micrometer-core",  "micrometer-core"):  "io.micrometer:micrometer-core",
+    ("mockito-core",     "mockito-core"):     "org.mockito:mockito-core",
+    ("assertj-core",     "assertj-core"):     "org.assertj:assertj-core",
+    ("resilience4j-core","resilience4j-core"):"io.github.resilience4j:resilience4j-core",
+    ("slf4j-api",        "slf4j-api"):        "org.slf4j:slf4j-api",
 }
 
 
@@ -157,7 +164,7 @@ def resolve_maven_group_id(artifact_id: str) -> str | None:
     return None
 
 
-def cpe_to_osv_package(cpe: str) -> dict | None:
+async def cpe_to_osv_package(cpe: str) -> dict | None:
     parsed = parse_cpe(cpe)
     vendor = parsed["vendor"]
     product = parsed["product"]
@@ -169,7 +176,9 @@ def cpe_to_osv_package(cpe: str) -> dict | None:
     if "." in vendor:
         return {"name": f"{vendor}:{product}", "ecosystem": "Maven"}
 
-    group = resolve_maven_group_id(product)
+    # resolve_maven_group_id is sync + blocking — run it in a thread pool
+    # so it doesn't stall the event loop during the fallback HTTP call.
+    group = await asyncio.to_thread(resolve_maven_group_id, product)
     if group:
         return {"name": f"{group}:{product}", "ecosystem": "Maven"}
     return None

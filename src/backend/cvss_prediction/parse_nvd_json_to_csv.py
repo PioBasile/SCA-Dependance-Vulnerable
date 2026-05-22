@@ -98,6 +98,7 @@ def identify_ecosystem(cve_data, description):
     return "other"
 
 def process_and_append(file_path, output_csv, env):
+    import pandas as pd
     data_to_write = []
 
     with open(file_path, 'r', encoding='utf-8') as f:

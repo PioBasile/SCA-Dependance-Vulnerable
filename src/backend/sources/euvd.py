@@ -124,6 +124,7 @@ class EUVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin
                 # with — that name is what EUVD entries use, and it lets us
                 # reject sibling products like "Spring Cloud Function" when
                 # the user queried "spring framework".
+                variant_results = []
                 for item in items:
                     affected = item_affects_version(
                         item, target_version, product_hint=product
@@ -133,7 +134,7 @@ class EUVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin
                         if a.strip().upper().startswith("CVE-")
                     ]
                     if cve_ids:
-                        results.append({
+                        variant_results.append({
                             "cve_ids": cve_ids,
                             "euvd_id": item.get("id"),
                             "source": self.name,
@@ -146,7 +147,12 @@ class EUVDSource(VulnerabilitySource, CachingSourceMixin, RateLimitedSourceMixin
                             "raw": item,
                         })
 
-                break  # Stop after first name variant that returned results
+                results.extend(variant_results)
+                # Stop only when this variant confirmed at least one version match.
+                # If everything came back affects_version=False the product name
+                # may have matched a sibling entry — try the next name variant.
+                if any(r["affects_version"] for r in variant_results):
+                    break
 
             logger.info(f"[EUVD] Found {len(results)} vulnerabilities for {cpe}")
             return results

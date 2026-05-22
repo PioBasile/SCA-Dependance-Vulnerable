@@ -14,6 +14,10 @@ class NormalizedVulnerabilityDict(TypedDict, total=False):
     description: str
     references: List[str]
     affects_version: bool
+    version_start_including: Optional[str]
+    version_end_excluding: Optional[str]
+    version_start_excluding: Optional[str]
+    version_end_including: Optional[str]
     raw: dict
 
 

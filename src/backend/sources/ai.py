@@ -109,6 +109,7 @@ class LocalAISource(VulnerabilitySource):
         if not version or version in ("*", "-") or "SNAPSHOT" in version.upper():
             return []
         if vendor == product:
+            logger.debug(f"[AI] skipping {cpe}: vendor==product (syft-style CPE, no meaningful prediction)")
             return []
 
         if self._predict is None:
@@ -121,19 +122,19 @@ class LocalAISource(VulnerabilitySource):
         # input instead of the constant placeholder. Fall back to the
         # placeholder when no description is available.
         real_description = _description_for_product(vendor, product)
-        if real_description:
-            prompt = real_description
-            prompt_origin = "stored CVE description"
-        else:
-            prompt = f"Security vulnerability in {cpe}."
-            prompt_origin = "placeholder (no stored description)"
+        if not real_description:
+            # Without a real CVE description the model always outputs ~9.8
+            # (training data is dominated by critical CVEs). A placeholder
+            # prediction is pure noise — skip rather than mislead.
+            logger.debug(f"[AI] skipping {cpe}: no stored description, placeholder would yield meaningless score")
+            return []
+        prompt = real_description
 
         try:
             score = float(self._predict(prompt))
         except Exception as e:
             logger.warning(f"[AI] prediction failed for {cpe}: {e}")
             return []
-        logger.debug(f"[AI] prompt origin: {prompt_origin}")
 
         synthetic_id = "AI-" + cpe.replace(":", "-").strip("-")[:80]
         logger.info(f"[AI] {cpe} → predicted CVSS {score:.1f} (informational, not a confirmation)")

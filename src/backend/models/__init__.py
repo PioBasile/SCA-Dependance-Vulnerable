@@ -11,7 +11,6 @@ from .database import (
     CvssMetric,
     Node,
     CpeMatch,
-    FixCommit,
 )
 from .schemas import *
 
@@ -27,5 +26,4 @@ __all__ = [
     "CvssMetric",
     "Node",
     "CpeMatch",
-    "FixCommit",
 ]

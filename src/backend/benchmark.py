@@ -139,7 +139,7 @@ async def _bench_one(source: VulnerabilitySource, cpe: str) -> Sample:
         unique = [c for c in cve_ids if not (c in seen or seen.add(c))]
         scores = [
             float(r["base_score"])
-            for r in affected
+            for r in results
             if r.get("base_score") is not None
         ]
         return Sample(
