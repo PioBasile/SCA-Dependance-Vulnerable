@@ -143,6 +143,11 @@ class Aggregator:
         ):
             await self._enrich_with_euvd(confirmed_cve_ids, db)
 
+        # EUVD never provides structured version ranges. Run OSV as a lightweight
+        # range-only enrichment pass so CpeMatch rows get versionStart/End filled.
+        if confirmed and confirmed_source != "AI" and confirmed_cve_ids:
+            await self._enrich_with_osv_ranges(cpe_name, confirmed_cve_ids, db)
+
         if not confirmed:
             try:
                 self._store_unknown_marker(cpe_name, db)
@@ -195,7 +200,7 @@ class Aggregator:
                 healthy = await source.healthy()
                 results[source.name] = {
                     "healthy": healthy,
-                    "details": "OK" if healthy else "Connection failed",
+                    "details": "OK" if healthy else "Unavailable",
                     "checked_at": datetime.utcnow(),
                 }
             except Exception as e:
@@ -301,6 +306,64 @@ class Aggregator:
         except Exception as e:
             db.rollback()
             logger.warning(f"[Enrich] commit failed: {e}")
+
+    async def _enrich_with_osv_ranges(
+        self, cpe: str, cve_ids: set[str], db: Session
+    ) -> None:
+        """Backfill version ranges from OSV onto existing CpeMatch rows.
+
+        EUVD never returns structured version bounds (versionStartIncluding /
+        versionEndExcluding), but OSV does. Calling this after any source
+        confirms a vulnerability fills that gap without running OSV on every
+        single query — we only touch rows that still have NULL ranges.
+        """
+        osv = next((s for s in self._sources if s.name == "OSV"), None)
+        if osv is None:
+            return
+        try:
+            results = await osv.query(cpe)
+        except Exception as e:
+            logger.warning(f"[Enrich] OSV range lookup failed for {cpe}: {e}")
+            return
+
+        updated = 0
+        for result in results:
+            v_start = result.get("version_start_including")
+            v_end = result.get("version_end_excluding")
+            if not v_start and not v_end:
+                continue
+            for cve_id in result.get("cve_ids", []):
+                if cve_id not in cve_ids:
+                    continue
+                node = db.query(Node).filter(Node.cve_id == cve_id).first()
+                if not node:
+                    continue
+                match = db.query(CpeMatch).filter(
+                    CpeMatch.node_id == node.id,
+                    CpeMatch.criteria == cpe,
+                ).first()
+                if not match:
+                    continue
+                changed = False
+                if v_start and not match.versionStartIncluding:
+                    match.versionStartIncluding = v_start
+                    changed = True
+                if v_end and not match.versionEndExcluding:
+                    match.versionEndExcluding = v_end
+                    changed = True
+                if changed:
+                    updated += 1
+
+        if updated:
+            try:
+                db.commit()
+                logger.info(
+                    "[Enrich] OSV backfilled version ranges on %d CpeMatch row(s) for %s",
+                    updated, cpe,
+                )
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"[Enrich] OSV range commit failed: {e}")
 
     # ========================================================================
     # Private Database Writing Methods
