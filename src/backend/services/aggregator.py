@@ -9,8 +9,8 @@ from core.config import settings
 from core.exceptions import SourceError
 from core.logger import get_logger
 from core.types import NormalizedVulnerabilityDict
+from sqlalchemy import Float, cast, desc as sql_desc
 from models import CpeMatch, CveItem, CvssMetric, Description, Node, Reference
-from sources.ai import LocalAISource
 from sources.base import VulnerabilitySource
 from sources.euvd import EUVDSource
 from sources.github import GitHubSource
@@ -45,7 +45,6 @@ class Aggregator:
             OSVSource(),
             NVDSource(),
             GitHubSource(),
-            LocalAISource(),
         ]
         logger.info(
             "Aggregator initialized with %d sources: %s",
@@ -73,8 +72,7 @@ class Aggregator:
         confirmed_cve_ids: set[str] = set()
 
         # ── Step 1: fan out EUVD + OSV + NVD + GitHub concurrently ─────────
-        ai_source = next((s for s in self._sources if s.name == "AI"), None)
-        primary_sources = [s for s in self._sources if s.name != "AI"]
+        primary_sources = self._sources
 
         async def _query_one(source: VulnerabilitySource):
             logger.info(f"[Aggregator] Querying source: {source.name}")
@@ -167,21 +165,11 @@ class Aggregator:
             # (e.g. those found directly by EUVD in the parallel fan-out).
             if confirmed_cve_ids:
                 await self._enrich_with_euvd(confirmed_cve_ids, db)
+                await self._enrich_with_ai_scores(confirmed_cve_ids, db)
 
-        # ── Step 4: AI — last resort when all primary sources found nothing ──
-        if not confirmed and ai_source and settings.ai.enabled:
-            logger.info(f"[Aggregator] Trying source: {ai_source.name}")
-            try:
-                ai_results = await ai_source.query(cpe_name)
-                if ai_results:
-                    first = ai_results[0]
-                    if first.get("base_score") is not None:
-                        ai_prediction = {
-                            "score": float(first["base_score"]),
-                            "vector": first.get("base_vector"),
-                        }
-            except Exception as e:
-                logger.exception(f"Unexpected error from {ai_source.name}: {e}")
+        # ── Step 4: AI — severity hint when all primary sources found nothing ──
+        if not confirmed and settings.ai.enabled:
+            ai_prediction = await self._predict_for_cpe(cpe_name, db)
 
         # ── Step 5: NOT_FOUND marker when nothing confirmed ──────────────────
         if not confirmed:
@@ -226,7 +214,7 @@ class Aggregator:
     async def health_check(self) -> Dict[str, Dict[str, Any]]:
         """
         Check health of all sources.
-        
+
         Returns:
             Dict with health status for each source
         """
@@ -245,12 +233,79 @@ class Aggregator:
                     "details": str(e),
                     "checked_at": datetime.utcnow(),
                 }
-        
+
+        # AI health: try importing the model (loads it if not already loaded)
+        if settings.ai.enabled:
+            try:
+                from cvss_prediction.cvss_prediction import predict_cvss  # noqa: F401
+                results["AI"] = {
+                    "healthy": True,
+                    "details": "Model loaded",
+                    "checked_at": datetime.utcnow(),
+                }
+            except Exception as e:
+                results["AI"] = {
+                    "healthy": False,
+                    "details": str(e),
+                    "checked_at": datetime.utcnow(),
+                }
+        else:
+            results["AI"] = {
+                "healthy": False,
+                "details": "Disabled (AI_FALLBACK_ENABLED=false)",
+                "checked_at": datetime.utcnow(),
+            }
+
         return results
     
     # ========================================================================
     # EUVD enrichment
     # ========================================================================
+
+    async def _predict_for_cpe(self, cpe: str, db: Session) -> Optional[Dict[str, Any]]:
+        """Predict a CVSS score for a CPE when no CVE was confirmed.
+
+        Looks up the most severe stored description for vendor:product and
+        runs it through the local DistilBERT model. Returns None on any failure.
+        """
+        parts = cpe.split(":")
+        if len(parts) < 6:
+            return None
+        vendor, product, version = parts[3], parts[4], parts[5]
+        if not version or version in ("*", "-") or "SNAPSHOT" in version.upper():
+            return None
+        if vendor == product:
+            return None
+
+        try:
+            from cvss_prediction.cvss_prediction import predict_cvss
+        except Exception as e:
+            logger.debug(f"[AI] model unavailable: {e}")
+            return None
+
+        pattern = f"%:{vendor}:{product}:%"
+        row = (
+            db.query(Description.value)
+            .join(Node, Node.cve_id == Description.cve_id)
+            .join(CpeMatch, CpeMatch.node_id == Node.id)
+            .outerjoin(CvssMetric, CvssMetric.cve_id == Description.cve_id)
+            .filter(CpeMatch.criteria.ilike(pattern))
+            .filter(Description.lang == "en")
+            .filter(Description.value.isnot(None))
+            .order_by(sql_desc(cast(CvssMetric.cvssData["baseScore"], Float)))
+            .first()
+        )
+        if not row or not row[0]:
+            logger.debug(f"[AI] no stored description for {vendor}:{product}, skipping")
+            return None
+
+        try:
+            score = float(await asyncio.to_thread(predict_cvss, row[0]))
+            logger.info(f"[AI] {cpe} → predicted CVSS {score:.1f}")
+            return {"score": score, "vector": None}
+        except Exception as e:
+            logger.warning(f"[AI] prediction failed for {cpe}: {e}")
+            return None
 
     async def _enrich_with_euvd(self, cve_ids: set[str], db: Session) -> None:
         """For each CVE id, fetch the matching EUVD record and back-fill any
@@ -342,6 +397,87 @@ class Aggregator:
         except Exception as e:
             db.rollback()
             logger.warning(f"[Enrich] commit failed: {e}")
+
+    async def _enrich_with_ai_scores(self, cve_ids: set[str], db: Session) -> None:
+        """Predict CVSS scores via local AI for CVEs that have no real score yet.
+
+        Runs only when the AI source is enabled and the model is available.
+        Predictions are stored with source="AI" so _max_score can prefer real
+        scores over them and only fall back to AI when nothing else exists.
+        """
+        if not settings.ai.enabled:
+            return
+
+        # Find CVEs that still have no CVSS metric from a real source
+        pending = [
+            cve_id for cve_id in cve_ids
+            if not db.query(CvssMetric).filter(
+                CvssMetric.cve_id == cve_id,
+                CvssMetric.source != "AI",
+            ).first()
+        ]
+        if not pending:
+            return
+
+        try:
+            from cvss_prediction.cvss_prediction import predict_cvss
+        except Exception as e:
+            logger.warning(f"[AI Enrich] model unavailable: {e}")
+            return
+
+        logger.info(f"[AI Enrich] {len(pending)} CVE(s) need a score: {pending}")
+        added = 0
+        for cve_id in pending:
+            # Skip if we already stored an AI score for this CVE
+            if db.query(CvssMetric).filter(
+                CvssMetric.cve_id == cve_id, CvssMetric.source == "AI"
+            ).first():
+                logger.debug(f"[AI Enrich] {cve_id}: AI score already stored, skipping")
+                continue
+
+            desc_row = db.query(Description).filter(
+                Description.cve_id == cve_id,
+                Description.lang == "en",
+            ).first()
+            desc_text = desc_row.value if (desc_row and desc_row.value) else None
+
+            if not desc_text:
+                # Fallback: fetch description from EUVD by CVE ID
+                try:
+                    euvd_data = await self._euvd.search_by_cve(cve_id)
+                    desc_text = (euvd_data or {}).get("description", "").strip() or None
+                    if desc_text:
+                        db.add(Description(cve_id=cve_id, lang="en", value=desc_text))
+                        db.flush()
+                        logger.debug(f"[AI Enrich] {cve_id}: got description from EUVD fallback")
+                except Exception as e:
+                    logger.debug(f"[AI Enrich] {cve_id}: EUVD fallback failed: {e}")
+
+            if not desc_text:
+                logger.warning(f"[AI Enrich] {cve_id}: no description anywhere, cannot predict")
+                continue
+
+            try:
+                score = float(await asyncio.to_thread(predict_cvss, desc_text))
+                logger.info(f"[AI Enrich] {cve_id} → predicted CVSS {score:.1f}")
+                db.add(CvssMetric(
+                    cve_id=cve_id,
+                    version="3.1",
+                    cvssData={"baseScore": score, "vectorString": None, "version": "3.1"},
+                    source="AI",
+                    type="Secondary",
+                ))
+                added += 1
+            except Exception as e:
+                logger.warning(f"[AI Enrich] prediction failed for {cve_id}: {e}")
+
+        if added:
+            try:
+                db.commit()
+                logger.info(f"[AI Enrich] predicted scores for {added} CVE(s)")
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"[AI Enrich] commit failed: {e}")
 
     async def _enrich_with_osv_ranges(
         self, cpe: str, cve_ids: set[str], db: Session

@@ -35,12 +35,48 @@ app = FastAPI(
 
 
 def _max_score(cve) -> float | None:
-    scores = [
+    # Prefer scores from real sources; only fall back to AI predictions when
+    # no authoritative score exists (avoids AI inflating a 4.8 to 9.8).
+    real = [
         m.cvssData["baseScore"]
         for m in cve.cvss_metrics
-        if m.cvssData and m.cvssData.get("baseScore") is not None
+        if m.cvssData and m.cvssData.get("baseScore") is not None and m.source != "AI"
     ]
-    return max(scores) if scores else None
+    if real:
+        return max(real)
+    ai = [
+        m.cvssData["baseScore"]
+        for m in cve.cvss_metrics
+        if m.cvssData and m.cvssData.get("baseScore") is not None and m.source == "AI"
+    ]
+    return max(ai) if ai else None
+
+
+async def _lazy_ai_enrich(cves, db: Session) -> list:
+    """For cached CVEs with no score, run AI enrichment then reload from DB."""
+    if not settings.ai.enabled:
+        return cves
+    needs_ai = {cve.cve_id for cve in cves if _max_score(cve) is None}
+    if not needs_ai:
+        return cves
+    await aggregator._enrich_with_ai_scores(needs_ai, db)
+    # Expire so SQLAlchemy reloads updated cvss_metrics on next access
+    for cve in cves:
+        db.expire(cve)
+    return cves
+
+
+def _score_is_ai(cve) -> bool:
+    """True when the displayed score comes from AI (no real source scored this CVE)."""
+    has_real = any(
+        m.cvssData and m.cvssData.get("baseScore") is not None and m.source != "AI"
+        for m in cve.cvss_metrics
+    )
+    has_ai = any(
+        m.cvssData and m.cvssData.get("baseScore") is not None and m.source == "AI"
+        for m in cve.cvss_metrics
+    )
+    return not has_real and has_ai
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +125,8 @@ async def query_cpe(request: CPEQueryRequest, db: Session = Depends(get_db)):
         logger.info("CPE %s not in cache, querying sources", request.cpe)
         found, _, ai_prediction = await aggregator.fetch_and_sync(request.cpe, db)
         cves = VulnerabilityService.search_by_cpe(request.cpe, db) if found else []
+
+    cves = await _lazy_ai_enrich(cves, db)
 
     vulnerabilities = [
         {
@@ -160,6 +198,8 @@ async def get_cpe_match(cpe_criteria: str = Query(...), db: Session = Depends(ge
         found, _, ai_prediction = await aggregator.fetch_and_sync(cpe_criteria, db)
         cves = VulnerabilityService.search_by_cpe(cpe_criteria, db) if found else []
 
+    cves = await _lazy_ai_enrich(cves, db)
+
     nodes_data = []
     for cve in cves:
         for node in cve.nodes:
@@ -191,6 +231,7 @@ async def get_cpe_match(cpe_criteria: str = Query(...), db: Session = Depends(ge
                 "status": cve.vulnStatus,
                 "published": cve.published.isoformat() if cve.published else None,
                 "base_score": _max_score(cve),
+                "score_is_ai": _score_is_ai(cve),
             }
             for cve in cves
         ],

@@ -90,6 +90,7 @@ public class DependencyAnalyzerApp extends Application {
                         + "  RED — score > 8.5 (high)."
                         + "  ORANGE — score > 6.5 (medium)."
                         + "  GREEN — score ≤ 6.5 (low)."
+                        + "  PINK — score estimated by AI."
                         + "  Click any CVE node to open it on cve.org."
         );
         descriptionText.setFill(Color.WHITE);
@@ -98,41 +99,53 @@ public class DependencyAnalyzerApp extends Application {
         descriptionTextFlow.setPrefWidth(360);
         descriptionTextFlow.setPadding(new Insets(0, 10, 10, 10));
 
-        VBox symbolsBox = new VBox(-30);
-        symbolsBox.setPadding(new Insets(-10, 10, 10, 10));
+        VBox symbolsBox = new VBox(10);
+        symbolsBox.setPadding(new Insets(12, 14, 12, 14));
         symbolsBox.setStyle("-fx-background-color: white; -fx-background-radius: 10; -fx-border-color: purple; -fx-border-width: 1; -fx-border-radius: 10;");
 
-        HBox apiSymbols = new HBox(-10);
+        // Row 1: node types
+        HBox apiSymbols = new HBox(8);
         apiSymbols.setAlignment(Pos.CENTER_LEFT);
         Label rootNodeLabel = new Label("●");
-        rootNodeLabel.setStyle("-fx-font-size: 60px;");
+        rootNodeLabel.setStyle("-fx-font-size: 22px;");
         rootNodeLabel.setTextFill(Color.BLUE);
         Label apiSymbol = new Label("●");
-        apiSymbol.setStyle("-fx-font-size: 60px;");
+        apiSymbol.setStyle("-fx-font-size: 22px;");
         apiSymbol.setTextFill(Color.web("#006400"));
         Label apiLabel = new Label("Application root  /  Dependency");
-        Region spacer1 = new Region(); spacer1.setPrefWidth(25);
-        apiSymbols.getChildren().addAll(rootNodeLabel, apiSymbol, spacer1, apiLabel);
+        apiLabel.setStyle("-fx-font-size: 12px;");
+        apiSymbols.getChildren().addAll(rootNodeLabel, apiSymbol, apiLabel);
 
-        HBox linkSymbol = new HBox(20);
-        linkSymbol.setAlignment(Pos.CENTER);
-        Label linkLine = new Label("─");
-        linkLine.setStyle("-fx-font-size: 30px;");
+        // Row 2: edge
+        HBox linkSymbol = new HBox(8);
+        linkSymbol.setAlignment(Pos.CENTER_LEFT);
+        Label linkLine = new Label("─────");
+        linkLine.setStyle("-fx-font-size: 14px;");
         linkLine.setTextFill(Color.BLACK);
         Label linkLabel = new Label("Links Application → Dependency → CVE");
-        Region spacer21 = new Region(); spacer21.setPrefWidth(8);
-        linkSymbol.getChildren().addAll(spacer21, linkLine, linkLabel);
+        linkLabel.setStyle("-fx-font-size: 12px;");
+        linkSymbol.getChildren().addAll(linkLine, linkLabel);
 
-        HBox vulnSymbols = new HBox(-2);
+        // Row 3: CVE severity colours
+        HBox vulnSymbols = new HBox(6);
         vulnSymbols.setAlignment(Pos.CENTER_LEFT);
-        Label greenSymbol = new Label("●"); greenSymbol.setStyle("-fx-font-size: 40px;"); greenSymbol.setTextFill(Color.GREEN);
-        Label yellowSymbol = new Label("●"); yellowSymbol.setStyle("-fx-font-size: 40px;"); yellowSymbol.setTextFill(Color.ORANGE);
-        Label redSymbol = new Label("●"); redSymbol.setStyle("-fx-font-size: 40px;"); redSymbol.setTextFill(Color.RED);
+        Label greenSymbol  = new Label("●"); greenSymbol.setStyle("-fx-font-size: 18px;");  greenSymbol.setTextFill(Color.GREEN);
+        Label orangeSymbol = new Label("●"); orangeSymbol.setStyle("-fx-font-size: 18px;"); orangeSymbol.setTextFill(Color.ORANGE);
+        Label redSymbol    = new Label("●"); redSymbol.setStyle("-fx-font-size: 18px;");    redSymbol.setTextFill(Color.RED);
         Label vulnLabel = new Label("CVE severity: low (≤ 6.5) / medium (> 6.5) / high (> 8.5)");
-        Region spacer3 = new Region(); spacer3.setPrefWidth(5);
-        vulnSymbols.getChildren().addAll(greenSymbol, yellowSymbol, redSymbol, spacer3, vulnLabel);
-        Region verticalSpace = new Region(); verticalSpace.setPrefHeight(40);
-        symbolsBox.getChildren().addAll(apiSymbols, linkSymbol, verticalSpace, vulnSymbols);
+        vulnLabel.setStyle("-fx-font-size: 12px;");
+        vulnSymbols.getChildren().addAll(greenSymbol, orangeSymbol, redSymbol, vulnLabel);
+
+        // Row 4: AI / no score
+        HBox aiSymbols = new HBox(6);
+        aiSymbols.setAlignment(Pos.CENTER_LEFT);
+        Label pinkSymbol = new Label("●"); pinkSymbol.setStyle("-fx-font-size: 18px;"); pinkSymbol.setTextFill(Color.HOTPINK);
+        Label graySymbol = new Label("●"); graySymbol.setStyle("-fx-font-size: 18px;"); graySymbol.setTextFill(Color.GRAY);
+        Label aiLabel = new Label("AI-predicted score / No score available");
+        aiLabel.setStyle("-fx-font-size: 12px;");
+        aiSymbols.getChildren().addAll(pinkSymbol, graySymbol, aiLabel);
+
+        symbolsBox.getChildren().addAll(apiSymbols, linkSymbol, vulnSymbols, aiSymbols);
 
         StackPane symbolsPane = new StackPane(symbolsBox);
         StackPane.setMargin(symbolsBox, new Insets(0, 15, 0, 15));
@@ -218,7 +231,9 @@ public class DependencyAnalyzerApp extends Application {
                                             }
                                         } catch (Exception ignored) {}
 
-                                        n.setAttribute("ui.style", "fill-color: #00B500; size: 20px; text-size: 12px;");
+                                        // Dependency node: pink when AI predicted severity (no confirmed CVEs)
+                                        String depColor = (aiScore != null) ? "hotpink" : "#00B500";
+                                        n.setAttribute("ui.style", "fill-color: " + depColor + "; size: 20px; text-size: 12px;");
                                         if (aiScore != null) {
                                             n.setAttribute("ui.label", String.format("%s (AI: %.1f)", formatCpe(cpe), aiScore));
                                         }
@@ -230,9 +245,13 @@ public class DependencyAnalyzerApp extends Application {
                                             boolean hasScore = !scoreNode.isMissingNode()
                                                     && !scoreNode.isNull()
                                                     && scoreNode.asDouble() > 0.0;
+                                            boolean scoreIsAi = cve.path("score_is_ai").asBoolean(false);
                                             double score = hasScore ? scoreNode.asDouble() : 0.0;
-                                            String scoreLabel = hasScore ? String.format("%.1f", score) : "N/A";
-                                            String color = !hasScore ? "gray"
+                                            String scoreLabel = hasScore
+                                                    ? String.format("%.1f%s", score, scoreIsAi ? " (AI)" : "")
+                                                    : "N/A";
+                                            String color = scoreIsAi ? "hotpink"
+                                                    : !hasScore ? "gray"
                                                     : score > 8.5 ? "red"
                                                     : score > 6.5 ? "orange"
                                                     : "green";

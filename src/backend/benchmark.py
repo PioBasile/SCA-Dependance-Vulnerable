@@ -31,7 +31,6 @@ from core.config import settings
 from core.logger import get_logger
 from core.types import NormalizedVulnerabilityDict
 from cvss import CVSS3
-from sources.ai import LocalAISource
 from sources.base import VulnerabilitySource
 from sources.euvd import EUVDSource
 from sources.github import GitHubSource
@@ -909,7 +908,7 @@ async def main(runs: int, with_aggregator: bool, agg_url: str) -> None:
     settings.ai.enabled = True
 
     sources: List[VulnerabilitySource] = [
-        EUVDSource(), OSVSource(), NVDSource(), GitHubSource(), LocalAISource(),
+        EUVDSource(), OSVSource(), NVDSource(), GitHubSource(),
     ]
     if with_aggregator:
         sources.append(AggregatorHTTPSource(agg_url))

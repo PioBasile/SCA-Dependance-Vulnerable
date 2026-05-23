@@ -1,5 +1,4 @@
 """Sources package - vulnerability source adapters."""
-from .ai import LocalAISource
 from .base import VulnerabilitySource
 from .euvd import EUVDSource
 from .github import GitHubSource
@@ -12,5 +11,4 @@ __all__ = [
     "OSVSource",
     "NVDSource",
     "GitHubSource",
-    "LocalAISource",
 ]
