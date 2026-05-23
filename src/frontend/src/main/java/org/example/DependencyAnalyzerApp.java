@@ -26,6 +26,8 @@ import org.graphstream.ui.swing_viewer.ViewPanel;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.cdimascio.dotenv.Dotenv;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.awt.Desktop;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -47,6 +49,8 @@ public class DependencyAnalyzerApp extends Application {
     private ViewPanel viewPanel;
     private String hoveredCveId = null;
     private final Map<String, String> originalStyles = new HashMap<>();
+    private Label warningLabel;
+    private static final Logger logger = LoggerFactory.getLogger("APP");
     private static final Dotenv dotenv = Dotenv.load();
     private static final String BACKEND_URL = dotenv.get("BACKEND_URL");
     private static final String CPE_API = "/config_nodes_cpe_match/?cpe_criteria=";
@@ -70,7 +74,7 @@ public class DependencyAnalyzerApp extends Application {
                 Desktop.getDesktop().browse(new URI("https://www.cve.org/CVERecord?id=" + cveId));
             }
         } catch (Exception e) {
-            System.err.println("Failed to open browser for " + cveId + ": " + e.getMessage());
+            logger.warn("Cannot open browser for {}: {}", cveId, e.getMessage());
         }
     }
 
@@ -187,7 +191,16 @@ public class DependencyAnalyzerApp extends Application {
                         }
                     });
 
-                    SbomExtractor.ExtractSbom(projectPath, 2);
+                    String[] syftTarget = SbomExtractor.resolveTarget(projectPath);
+                    String resolvedPath = syftTarget[0];
+                    String warning      = syftTarget[1];
+                    Platform.runLater(() -> {
+                        warningLabel.setText(warning != null ? "⚠ " + warning : "");
+                        warningLabel.setVisible(warning != null);
+                        warningLabel.setManaged(warning != null);
+                    });
+
+                    SbomExtractor.ExtractSbom(resolvedPath, 2);
                     File sbomFile = new File("sbom.cyclonedx.json");
                     if (!sbomFile.exists()) return;
 
@@ -269,14 +282,14 @@ public class DependencyAnalyzerApp extends Application {
                                             }
                                         }
                                     } catch (ConcurrentModificationException cme) {
-                                        System.err.println("Concurrent modification detected for " + cpe + ", will retry on next event");
+                                        logger.warn("Concurrent modification on node {}", cpe);
                                     }
                                 }
                             });
 
                             Thread.sleep(200);
                         } catch (Exception e) {
-                            System.err.println("Error during analyse : " + e.getMessage());
+                            logger.error("Analysis error on {}: {}", cpe, e.getMessage());
                         }
                     }
                 } finally {
@@ -292,8 +305,17 @@ public class DependencyAnalyzerApp extends Application {
         buttonBox.setAlignment(Pos.CENTER);
         buttonBox.setPadding(new Insets(25, 0, 0, 0));
 
+        warningLabel = new Label();
+        warningLabel.setTextFill(Color.YELLOW);
+        warningLabel.setStyle("-fx-font-size: 11px;");
+        warningLabel.setWrapText(true);
+        warningLabel.setMaxWidth(330);
+        warningLabel.setPadding(new Insets(6, 15, 0, 15));
+        warningLabel.setVisible(false);
+        warningLabel.setManaged(false);
+
         VBox mainContent = new VBox(10);
-        mainContent.getChildren().addAll(symbolsPane, titleTextContainer, InputFieldContainer, buttonBox);
+        mainContent.getChildren().addAll(symbolsPane, titleTextContainer, InputFieldContainer, buttonBox, warningLabel);
         leftSection.getChildren().addAll(titleLabel, descriptionTextFlow, mainContent);
 
         SwingNode swingNode = new SwingNode();

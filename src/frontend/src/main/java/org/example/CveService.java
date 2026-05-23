@@ -1,11 +1,13 @@
 package org.example;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.Date;
 
 public class CveService {
+    private static final Logger logger = LoggerFactory.getLogger("HTTP");
     private static final HttpClient client = HttpClient.newHttpClient();
 
     public static String fetchDataFromApi(String url) {
@@ -14,15 +16,14 @@ public class CveService {
                 .GET()
                 .build();
 
-        System.out.println("\n\n[" + new Date().toLocaleString() + "] GET " + url);
+        logger.info("GET {}", url);
 
         try {
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            System.out.println("[SUCCESS] => Response code : " + response.statusCode() + " | Response length : " + response.body().length());
-
+            logger.info("{} — {} bytes", response.statusCode(), response.body().length());
             return response.body();
         } catch (Exception e) {
-            System.err.println("[ERROR] => Trace : " + e.getMessage());
+            logger.error("Request failed : {}", e.getMessage());
             return null;
         }
     }
