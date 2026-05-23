@@ -87,13 +87,40 @@ class OSVSource(VulnerabilitySource, CachingSourceMixin):
                     # OSV already confirmed this version is affected
                     if cve_ids:
                         v_start, v_end = self._extract_version_range(vuln)
+
+                        # Extract CVSS score from OSV severity field when present.
+                        # OSV returns the full vector string (e.g. "CVSS:3.1/AV:N/...")
+                        # which the cvss library can parse into a base score.
+                        base_score = None
+                        base_vector = None
+                        base_version = "3.1"
+                        for sev in vuln.get("severity", []):
+                            sev_type = sev.get("type", "")
+                            vector = sev.get("score", "")
+                            if not vector:
+                                continue
+                            try:
+                                if sev_type == "CVSS_V3":
+                                    from cvss import CVSS3
+                                    base_score = float(CVSS3(vector).base_score)
+                                    base_vector = vector
+                                    base_version = "3.1"
+                                    break
+                                elif sev_type == "CVSS_V2" and base_score is None:
+                                    from cvss import CVSS2
+                                    base_score = float(CVSS2(vector).base_score)
+                                    base_vector = vector
+                                    base_version = "2.0"
+                            except Exception:
+                                pass
+
                         results.append({
                             "cve_ids": cve_ids,
                             "euvd_id": None,
                             "source": self.name,
-                            "base_score": None,  # Enriched later via EUVD
-                            "base_vector": None,
-                            "base_version": "3.1",
+                            "base_score": base_score,
+                            "base_vector": base_vector,
+                            "base_version": base_version,
                             "description": vuln.get("summary", ""),
                             "references": [r.get("url", "") for r in vuln.get("references", []) if r.get("url")],
                             "affects_version": True,  # OSV confirms it

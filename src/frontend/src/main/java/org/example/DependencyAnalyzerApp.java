@@ -18,22 +18,35 @@ import javax.swing.*;
 import org.graphstream.graph.Graph;
 import org.graphstream.graph.Node;
 import org.graphstream.graph.implementations.SingleGraph;
+import org.graphstream.ui.graphicGraph.GraphicElement;
 import org.graphstream.ui.view.Viewer;
+import org.graphstream.ui.view.util.InteractiveElement;
 import org.graphstream.ui.swing_viewer.SwingViewer;
 import org.graphstream.ui.swing_viewer.ViewPanel;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.cdimascio.dotenv.Dotenv;
+import java.awt.Desktop;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.io.File;
+import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.ConcurrentModificationException;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 public class DependencyAnalyzerApp extends Application {
 
     private Graph graph;
+    private ViewPanel viewPanel;
+    private String hoveredCveId = null;
+    private final Map<String, String> originalStyles = new HashMap<>();
     private static final Dotenv dotenv = Dotenv.load();
     private static final String BACKEND_URL = dotenv.get("BACKEND_URL");
     private static final String CPE_API = "/config_nodes_cpe_match/?cpe_criteria=";
@@ -49,6 +62,16 @@ public class DependencyAnalyzerApp extends Application {
                                           : vendor + ":" + product + " " + version;
         }
         return cpe;
+    }
+
+    private void openCveInBrowser(String cveId) {
+        try {
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                Desktop.getDesktop().browse(new URI("https://www.cve.org/CVERecord?id=" + cveId));
+            }
+        } catch (Exception e) {
+            System.err.println("Failed to open browser for " + cveId + ": " + e.getMessage());
+        }
     }
 
     @Override
@@ -67,6 +90,7 @@ public class DependencyAnalyzerApp extends Application {
                         + "  RED — score > 8.5 (high)."
                         + "  ORANGE — score > 6.5 (medium)."
                         + "  GREEN — score ≤ 6.5 (low)."
+                        + "  Click any CVE node to open it on cve.org."
         );
         descriptionText.setFill(Color.WHITE);
 
@@ -201,14 +225,23 @@ public class DependencyAnalyzerApp extends Application {
 
                                         for (JsonNode cve : cveEntries) {
                                             String cveId = cve.path("cve_id").asText();
-                                            double score = cve.path("base_score").asDouble(0.0);
-                                            String color = score > 8.5 ? "red" : score > 6.5 ? "orange" : "green";
+
+                                            JsonNode scoreNode = cve.path("base_score");
+                                            boolean hasScore = !scoreNode.isMissingNode()
+                                                    && !scoreNode.isNull()
+                                                    && scoreNode.asDouble() > 0.0;
+                                            double score = hasScore ? scoreNode.asDouble() : 0.0;
+                                            String scoreLabel = hasScore ? String.format("%.1f", score) : "N/A";
+                                            String color = !hasScore ? "gray"
+                                                    : score > 8.5 ? "red"
+                                                    : score > 6.5 ? "orange"
+                                                    : "green";
 
                                             Node cveNode = graph.getNode(cveId);
                                             if (cveNode == null) {
                                                 cveNode = graph.addNode(cveId);
                                             }
-                                            cveNode.setAttribute("ui.label", String.format("%s (%.1f)", cveId, score));
+                                            cveNode.setAttribute("ui.label", String.format("%s (%s)", cveId, scoreLabel));
                                             cveNode.setAttribute("ui.style", "fill-color: " + color + "; size: 16px; text-size: 11px;");
 
                                             String edgeId = cpe + "->" + cveId;
@@ -265,8 +298,61 @@ public class DependencyAnalyzerApp extends Application {
             graph.setAttribute("ui.stylesheet", "node { text-size: 12px; }");
             Viewer viewer = new SwingViewer(graph, Viewer.ThreadingModel.GRAPH_IN_GUI_THREAD);
             viewer.enableAutoLayout();
-            ViewPanel viewPanel = (ViewPanel) viewer.addDefaultView(false);
+            viewPanel = (ViewPanel) viewer.addDefaultView(false);
             swingNode.setContent(viewPanel);
+
+            EnumSet<InteractiveElement> nodeOnly = EnumSet.of(InteractiveElement.NODE);
+
+            viewPanel.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    GraphicElement el = viewPanel.findGraphicElementAt(nodeOnly, e.getX(), e.getY());
+                    if (el != null && el.getId().startsWith("CVE-")) {
+                        openCveInBrowser(el.getId());
+                    }
+                }
+            });
+
+            viewPanel.addMouseMotionListener(new java.awt.event.MouseMotionAdapter() {
+                @Override
+                public void mouseMoved(MouseEvent e) {
+                    GraphicElement el = viewPanel.findGraphicElementAt(nodeOnly, e.getX(), e.getY());
+                    String newId = (el != null && el.getId().startsWith("CVE-")) ? el.getId() : null;
+
+                    if (Objects.equals(newId, hoveredCveId)) return;
+
+                    // Restore previous hovered node
+                    if (hoveredCveId != null) {
+                        synchronized (graph) {
+                            Node prev = graph.getNode(hoveredCveId);
+                            if (prev != null && originalStyles.containsKey(hoveredCveId)) {
+                                prev.setAttribute("ui.style", originalStyles.get(hoveredCveId));
+                            }
+                        }
+                    }
+
+                    // Highlight new hovered node
+                    if (newId != null) {
+                        synchronized (graph) {
+                            Node node = graph.getNode(newId);
+                            if (node != null) {
+                                String original = (String) node.getAttribute("ui.style");
+                                originalStyles.put(newId, original);
+                                String highlighted = original
+                                    .replace("size: 16px", "size: 28px")
+                                    .replace("text-size: 11px", "text-size: 14px")
+                                    + " stroke-mode: plain; stroke-color: white; stroke-width: 3px;";
+                                node.setAttribute("ui.style", highlighted);
+                            }
+                        }
+                        viewPanel.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+                    } else {
+                        viewPanel.setCursor(java.awt.Cursor.getDefaultCursor());
+                    }
+
+                    hoveredCveId = newId;
+                }
+            });
         });
     }
 }

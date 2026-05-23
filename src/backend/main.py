@@ -35,10 +35,12 @@ app = FastAPI(
 
 
 def _max_score(cve) -> float | None:
-    return max(
-        (m.cvssData.get("baseScore", 0) for m in cve.cvss_metrics if m.cvssData),
-        default=None,
-    )
+    scores = [
+        m.cvssData["baseScore"]
+        for m in cve.cvss_metrics
+        if m.cvssData and m.cvssData.get("baseScore") is not None
+    ]
+    return max(scores) if scores else None
 
 
 # ---------------------------------------------------------------------------
