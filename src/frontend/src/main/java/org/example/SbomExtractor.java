@@ -11,6 +11,7 @@ import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -51,19 +52,24 @@ public class SbomExtractor {
         try {
             JsonNode root = new ObjectMapper().readTree(new File(filePath));
             JsonNode components = root.path("components");
-            int total = components.isArray() ? components.size() : 0;
 
             if (components.isArray()) {
                 for (JsonNode component : components) {
-                    JsonNode cpe = component.path("cpe");
-                    if (!cpe.isMissingNode() && !cpe.asText().isEmpty()) {
-                        cpeList.add(cpe.asText());
+
+                    JsonNode cpeNode = component.path("cpe");
+                    if (!cpeNode.isMissingNode() && !cpeNode.asText().isEmpty()) {
+                        cpeList.add(cpeNode.asText());
+                    } else {
+                        JsonNode cpesNode = component.path("cpes");
+                        if (cpesNode.isArray() && !cpesNode.isEmpty()) {
+                            cpeList.add(cpesNode.get(0).asText());
+                        }
                     }
                 }
             }
-            logger.info("Parsed SBOM : {} components, {} with CPE", total, cpeList.size());
+            logger.info("Parsed SBOM : {} components with CPE found", cpeList.size());
         } catch (Exception e) {
-            logger.error("Failed to read SBOM: {}", e.getMessage());
+            logger.error("Failed to read SBOM : {}", e.getMessage());
         }
         return cpeList;
     }
@@ -71,41 +77,47 @@ public class SbomExtractor {
     public static String[] resolveTarget(String userPath) {
         File f = new File(userPath);
 
-        if (f.isFile()) {
-            String name = f.getName().toLowerCase();
-            if (name.endsWith(".jar") || name.endsWith(".war") || name.endsWith(".ear")) {
-                if (isFatArchive(f)) {
-                    logger.info("Fat archive detected : {}", f.getName());
-                    return new String[]{userPath, null};
-                }
-                File tempDir = extractPomToTemp(f);
-                if (tempDir != null) {
-                    logger.warn("Plain JAR — extracted pom.xml for dependency scan : {}", f.getName());
-                    return new String[]{
-                        tempDir.getAbsolutePath(),
-                        "Plain JAR detected — scanning embedded pom.xml only (direct dependencies).\n"
-                        + "Use a fat JAR or run 'mvn dependency:copy-dependencies' for full transitive coverage."
-                    };
-                }
-                logger.info("Target is an archive : {}", userPath);
-                return new String[]{userPath, null};
-            }
+        if (!f.exists()) {
+            throw new IllegalArgumentException("Path doesn't exists : " + userPath);
         }
 
         if (f.isDirectory()) {
-            File depDir = new File(f, "target/dependency");
-            String[] depContents = depDir.list();
-            if (depDir.isDirectory() && depContents != null && depContents.length > 0) {
-                logger.info("Using target/dependency/ : {}", depDir.getAbsolutePath());
-                return new String[]{depDir.getAbsolutePath(), null};
+            File pomFile = new File(f, "pom.xml");
+            if (pomFile.exists()) {
+                logger.info("Maven project found, resolving transitives dependencies");
+                try {
+                    ProcessBuilder mavenPb = new ProcessBuilder(
+                            "mvn", "dependency:copy-dependencies", "-DoutputDirectory=target/dependency"
+                    );
+                    mavenPb.directory(f);
+                    Process mavenProcess = mavenPb.start();
+                    mavenProcess.waitFor();
+                } catch (Exception e) {
+                    logger.warn("Fallback on pom.xml due to an error : {}", e.getMessage());
+                }
             }
 
-            logger.warn("No built artifact found, falling back to pom.xml (direct deps only) : {}", userPath);
-            return new String[]{
-                userPath,
-                "No built artifact found — scanning pom.xml only (direct dependencies)\n"
-                + "Run 'mvn dependency:copy-dependencies -DoutputDirectory=target/dependency' for full transitive coverage"
-            };
+            File depDir = new File(f, "target/dependency");
+            if (depDir.isDirectory() && depDir.list() != null && Objects.requireNonNull(depDir.list()).length > 0) {
+                logger.info("Syft scan on complet dependencies tree");
+                return new String[]{depDir.getAbsolutePath(), null};
+            }
+        }
+
+        if (f.isFile()) {
+            String name = f.getName().toLowerCase();
+            if (name.endsWith(".jar") || name.endsWith(".war")) {
+                if (isFatArchive(f)) {
+                    logger.info("Fat archive detected: {}", f.getName());
+                    return new String[]{userPath, null};
+                }
+
+                return new String[]{
+                        userPath,
+                        "Warning: Plain JAR detected. Transitive dependencies might be missing. " +
+                                "Scan the project root directory instead for full transitive coverage via pom.xml."
+                };
+            }
         }
 
         return new String[]{userPath, null};
