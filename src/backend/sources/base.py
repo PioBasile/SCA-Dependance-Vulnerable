@@ -79,7 +79,6 @@ class CachingSourceMixin:
         return f"{self.name}:{method}:{':'.join(str(a) for a in args)}"
     
     def _get_from_cache(self, key: str) -> Optional[Any]:
-        """Get value from cache."""
         import time
         if key in self._cache:
             value, timestamp = self._cache[key]
@@ -89,7 +88,6 @@ class CachingSourceMixin:
         return None
 
     def _set_in_cache(self, key: str, value: Any) -> None:
-        """Store value in cache."""
         import time
         self._cache[key] = (value, time.time())
 

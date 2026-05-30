@@ -18,382 +18,70 @@
 
     <dependencies>
 
-        <!-- ============================================================ -->
-        <!-- CRITICAL — Log4Shell family                                  -->
-        <!-- CVE-2021-44228 (CVSS 10.0), CVE-2021-45046                 -->
-        <!-- CVE-2021-45105, CVE-2021-44832                              -->
-        <!-- ============================================================ -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-core</artifactId>
             <version>2.14.1</version>
         </dependency>
-        <dependency>
-            <groupId>org.apache.logging.log4j</groupId>
-            <artifactId>log4j-api</artifactId>
-            <version>2.14.1</version>
-        </dependency>
 
-        <!-- ============================================================ -->
-        <!-- SAFE — Log4j patched                                         -->
-        <!-- No known CVEs in 2.23.1                                     -->
-        <!-- Tests that your scanner gives it a clean bill of health     -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.apache.logging.log4j</groupId>
-            <artifactId>log4j-slf4j2-impl</artifactId>
-            <version>2.23.1</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- CRITICAL — Spring4Shell + Cloud RCE                         -->
-        <!-- CVE-2022-22965 (CVSS 9.8), CVE-2022-22963 (CVSS 9.8)      -->
-        <!-- CVE-2022-22947 (CVSS 10.0)                                  -->
-        <!-- ============================================================ -->
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-webmvc</artifactId>
             <version>5.3.17</version>
         </dependency>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-function-context</artifactId>
-            <version>3.1.6</version>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-gateway-server</artifactId>
-            <version>3.1.0</version>
-        </dependency>
 
-        <!-- ============================================================ -->
-        <!-- SAFE — Spring Framework current stable                       -->
-        <!-- No known CVEs in 6.1.x at time of writing                  -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.springframework</groupId>
-            <artifactId>spring-context</artifactId>
-            <version>6.1.6</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- CRITICAL — Apache Struts RCE                                 -->
-        <!-- CVE-2017-5638 (CVSS 10.0), CVE-2018-11776 (CVSS 9.8)      -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.apache.struts</groupId>
-            <artifactId>struts2-core</artifactId>
-            <version>2.5.10</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- CRITICAL — Jackson deserialization RCE                      -->
-        <!-- CVE-2020-8840 (CVSS 9.8), CVE-2019-14540                   -->
-        <!-- CVE-2019-16335, CVE-2019-17267                              -->
-        <!-- ============================================================ -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>2.9.10</version>
         </dependency>
 
-        <!-- ============================================================ -->
-        <!-- SAFE — Jackson current stable                                -->
-        <!-- No known CVEs in 2.17.x                                     -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-annotations</artifactId>
-            <version>2.17.0</version>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.dataformat</groupId>
-            <artifactId>jackson-dataformat-yaml</artifactId>
-            <version>2.17.0</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- CRITICAL — Fastjson deserialization RCE                     -->
-        <!-- CVE-2022-25845 (CVSS 9.8)                                   -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>com.alibaba</groupId>
-            <artifactId>fastjson</artifactId>
-            <version>1.2.80</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- HIGH — Apache Commons Text4Shell                            -->
-        <!-- CVE-2022-42889 (CVSS 9.8)                                   -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-text</artifactId>
-            <version>1.9</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- SAFE — Apache Commons patched versions                      -->
-        <!-- commons-text 1.12.0 — CVE-2022-42889 patched in 1.10.0    -->
-        <!-- commons-lang3 3.14.0 — no known CVEs                       -->
-        <!-- commons-io 2.16.1 — no known CVEs                          -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-text</artifactId>
-            <version>1.12.0</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-lang3</artifactId>
-            <version>3.14.0</version>
-        </dependency>
-        <dependency>
-            <groupId>commons-io</groupId>
-            <artifactId>commons-io</artifactId>
-            <version>2.16.1</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- HIGH — Apache Commons Collections RCE                       -->
-        <!-- CVE-2015-6420 (CVSS 9.8), CVE-2015-7501                    -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>commons-collections</groupId>
-            <artifactId>commons-collections</artifactId>
-            <version>3.2.1</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- SAFE — Commons Collections patched                          -->
-        <!-- No known CVEs in 4.4                                        -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-collections4</artifactId>
-            <version>4.4</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- HIGH — Apache Shiro auth bypass                             -->
-        <!-- CVE-2020-11989 (CVSS 9.8), CVE-2021-41303                  -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.apache.shiro</groupId>
-            <artifactId>shiro-core</artifactId>
-            <version>1.7.0</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- HIGH — H2 Database RCE                                      -->
-        <!-- CVE-2021-42392 (CVSS 9.8), CVE-2022-23221                  -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
-            <version>2.0.204</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- HIGH — SnakeYAML unsafe deserialization                     -->
-        <!-- CVE-2022-1471 (CVSS 9.8), CVE-2022-25857 (CVSS 7.5)       -->
-        <!-- ============================================================ -->
         <dependency>
             <groupId>org.yaml</groupId>
             <artifactId>snakeyaml</artifactId>
             <version>1.30</version>
         </dependency>
 
-        <!-- ============================================================ -->
-        <!-- SAFE — SnakeYAML patched                                    -->
-        <!-- CVE-2022-1471 patched in 2.0                                -->
-        <!-- ============================================================ -->
         <dependency>
-            <groupId>org.yaml</groupId>
-            <artifactId>snakeyaml</artifactId>
-            <version>2.2</version>
+            <groupId>commons-collections</groupId>
+            <artifactId>commons-collections</artifactId>
+            <version>3.2.1</version>
         </dependency>
 
-        <!-- ============================================================ -->
-        <!-- HIGH — XStream deserialization RCE                          -->
-        <!-- CVE-2021-39139 through CVE-2021-39154                       -->
-        <!-- ============================================================ -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-text</artifactId>
+            <version>1.9</version>
+        </dependency>
+
         <dependency>
             <groupId>com.thoughtworks.xstream</groupId>
             <artifactId>xstream</artifactId>
             <version>1.4.17</version>
         </dependency>
 
-        <!-- ============================================================ -->
-        <!-- HIGH — Bouncy Castle side-channel / LDAP injection          -->
-        <!-- CVE-2020-15522 (CVSS 5.9), CVE-2023-33201 (CVSS 5.3)      -->
-        <!-- ============================================================ -->
         <dependency>
-            <groupId>org.bouncycastle</groupId>
-            <artifactId>bcprov-jdk15on</artifactId>
-            <version>1.68</version>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.0.204</version>
         </dependency>
 
-        <!-- ============================================================ -->
-        <!-- SAFE — Bouncy Castle current                                 -->
-        <!-- No known CVEs in 1.78.1                                     -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.bouncycastle</groupId>
-            <artifactId>bcprov-jdk18on</artifactId>
-            <version>1.78.1</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- HIGH — Netty HTTP smuggling / ReDoS                         -->
-        <!-- CVE-2021-21290, CVE-2021-37136, CVE-2021-37137             -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>io.netty</groupId>
-            <artifactId>netty-all</artifactId>
-            <version>4.1.59.Final</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- SAFE — Netty current stable                                  -->
-        <!-- No known CVEs in 4.1.109.Final                              -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>io.netty</groupId>
-            <artifactId>netty-buffer</artifactId>
-            <version>4.1.109.Final</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- MEDIUM — Hibernate SQL injection                            -->
-        <!-- CVE-2019-14900, CVE-2020-25638 (CVSS 7.4)                  -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.hibernate</groupId>
-            <artifactId>hibernate-core</artifactId>
-            <version>5.4.18.Final</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- MEDIUM — Jetty request smuggling / info disclosure          -->
-        <!-- CVE-2021-28165 (CVSS 7.5), CVE-2021-28169 (CVSS 5.3)      -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-server</artifactId>
-            <version>9.4.40.v20210413</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- MEDIUM — Tomcat request smuggling                           -->
-        <!-- CVE-2021-33037 (CVSS 5.3), CVE-2021-30640 (CVSS 4.8)      -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.apache.tomcat.embed</groupId>
-            <artifactId>tomcat-embed-core</artifactId>
-            <version>9.0.48</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- MEDIUM — Guava path traversal / insecure temp dir           -->
-        <!-- CVE-2023-2976 (CVSS 7.1), CVE-2020-8908 (CVSS 3.3)        -->
-        <!-- ============================================================ -->
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
             <version>29.0-jre</version>
         </dependency>
 
-        <!-- ============================================================ -->
-        <!-- SAFE — Guava current stable                                  -->
-        <!-- CVE-2023-2976 patched in 32.0.0                             -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
-            <version>33.2.0-jre</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- SAFE — Google libraries, no known CVEs                      -->
-        <!-- Gson 2.10.1, Protobuf 3.25.3                                -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-            <version>2.10.1</version>
-        </dependency>
-        <dependency>
-            <groupId>com.google.protobuf</groupId>
-            <artifactId>protobuf-java</artifactId>
-            <version>3.25.3</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- SAFE — SLF4J, no known CVEs in 2.x                         -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-            <version>2.0.13</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- SAFE — Caffeine cache, no known CVEs                        -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>com.github.ben-manes.caffeine</groupId>
-            <artifactId>caffeine</artifactId>
-            <version>3.1.8</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- SAFE — MapStruct, compile-time only, no CVEs                -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>org.mapstruct</groupId>
-            <artifactId>mapstruct</artifactId>
-            <version>1.5.5.Final</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- SAFE — Resilience4j, no known CVEs in 2.x                  -->
-        <!-- ============================================================ -->
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-core</artifactId>
-            <version>2.2.0</version>
-        </dependency>
-
-        <!-- ============================================================ -->
-        <!-- SAFE — Micrometer metrics, no known CVEs in 1.13.x         -->
-        <!-- ============================================================ -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
             <version>1.13.0</version>
         </dependency>
 
-        <!-- ============================================================ -->
-        <!-- SAFE — Test scope (scanner should flag scope, not CVEs)     -->
-        <!-- ============================================================ -->
         <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <version>5.10.2</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.mockito</groupId>
-            <artifactId>mockito-core</artifactId>
-            <version>5.11.0</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.assertj</groupId>
-            <artifactId>assertj-core</artifactId>
-            <version>3.25.3</version>
-            <scope>test</scope>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-avro</artifactId>
+            <version>1.14.4</version>
         </dependency>
 
     </dependencies>
